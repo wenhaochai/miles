@@ -161,7 +161,11 @@ def loss_function(
           Tinker losses may also return "per_datum" outputs.
     """
     parallel_state = get_parallel_state()
-    num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
+    if getattr(args, "actor_only_overlong_filter", False):
+        # EasyPPO masks whole rows: a fully masked response adds no tokens to the token-mean denominator
+        num_tokens = torch.clamp_min(sum([loss_mask.sum() for loss_mask in batch["loss_masks"]]), 1)
+    else:
+        num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
     num_samples = len(batch["response_lengths"])
 
     sum_of_sample_mean = get_sum_of_sample_mean(

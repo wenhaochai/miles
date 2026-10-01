@@ -1579,6 +1579,39 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="number of iterations to linearly warmup for critic model.",
             )
 
+            # EasyPPO (arXiv 2609.36802; miles/backends/training_utils/loss_hub/easyppo.py)
+            parser.add_argument(
+                "--critic-global-batch-size",
+                type=int,
+                default=None,
+                help="EasyPPO: the critic trainer's own global batch size (rollouts per critic optimizer step), e.g. "
+                "a quarter of the actor's for four critic steps per rollout. Default: the actor's --global-batch-size.",
+            )
+            parser.add_argument(
+                "--critic-variance-weighted-loss",
+                action="store_true",
+                default=False,
+                help="EasyPPO noise-normalized critic regression: multiply each response's clipped value loss by "
+                "1/max(var**beta, w_min) of its prompt group's rewards (population variance), normalized to mean 1 "
+                "over the batch's prompts.",
+            )
+            parser.add_argument("--critic-variance-weight-beta", type=float, default=0.5)
+            parser.add_argument("--critic-variance-weight-min", type=float, default=0.25)
+            parser.add_argument("--critic-variance-weight-max", type=float, default=None)
+            parser.add_argument(
+                "--actor-only-overlong-filter",
+                action="store_true",
+                default=False,
+                help="EasyPPO actor-only overlong filtering: responses that hit --rollout-max-response-len keep full "
+                "weight in GAE, advantage whitening and the critic update and are masked out of the actor loss only.",
+            )
+            parser.add_argument(
+                "--value-loss-scale",
+                type=float,
+                default=1.0,
+                help="Multiplier on the value loss (EasyPPO / verl compute_value_loss uses 0.5).",
+            )
+
             parser.add_argument("--eps-clip", type=float, default=0.2, help="PPO clip range")
             parser.add_argument("--eps-clip-high", type=float, default=None, help="PPO clip upper range")
             parser.add_argument(
@@ -3527,6 +3560,14 @@ def miles_validate_args(args):
         args.critic_load = args.load
     if args.critic_lr is None:
         args.critic_lr = args.lr
+    if args.critic_global_batch_size is not None:
+        assert args.use_critic, "--critic-global-batch-size needs --advantage-estimator ppo"
+        assert args.global_batch_size is None or args.global_batch_size % args.critic_global_batch_size == 0, (
+            f"--critic-global-batch-size {args.critic_global_batch_size} must divide --global-batch-size "
+            f"{args.global_batch_size}"
+        )
+    if args.critic_variance_weighted_loss or args.actor_only_overlong_filter:
+        assert args.use_critic, "the EasyPPO critic options need --advantage-estimator ppo"
     if args.critic_save is None and args.save is not None:
         # a sibling dir, not args.save itself: sharing a dir would clobber the actor's iteration tracker
         args.critic_save = args.save.rstrip("/") + "_critic"

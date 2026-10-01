@@ -445,6 +445,14 @@ def value_loss_function(
     surr1 = (values_clipped - returns) ** 2
     surr2 = (values - returns) ** 2
     loss = torch.max(surr1, surr2)
+    if getattr(args, "critic_variance_weighted_loss", False):
+        # EasyPPO compute_value_loss: per-response weights multiply the numerator; the token denominator is unchanged
+        weights = batch["critic_loss_weights"]
+        assert weights is not None, "--critic-variance-weighted-loss needs critic_loss_weights in the rollout data"
+        loss = loss * torch.cat(
+            [torch.full_like(v, float(w), dtype=loss.dtype) for v, w in zip(batch["values"], weights, strict=True)]
+        )
+    loss = loss * getattr(args, "value_loss_scale", 1.0)
 
     loss = sum_of_sample_mean(loss)
     values_clipfrac = sum_of_sample_mean(values_clipfrac.float())

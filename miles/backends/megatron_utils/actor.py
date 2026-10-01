@@ -756,6 +756,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 # because we may need normalize the whole rollout.
                 compute_advantages_and_returns(self.args, rollout_data)
                 log_train_advantage_computation_event(rollout_data)
+                if self.args.actor_only_overlong_filter:
+                    # EasyPPO: overlong responses already fed GAE, whitening and the critic; drop them from the actor loss
+                    from miles.backends.training_utils.loss_hub.easyppo import apply_actor_overlong_mask
+
+                    n_masked = apply_actor_overlong_mask(self.args, rollout_data)
+                    logger.info(f"EasyPPO actor-only overlong filter: masked {n_masked} local responses")
 
             if self.rollout_data_postprocess is not None:
                 self.rollout_data_postprocess(self.args)

@@ -32,6 +32,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "seq_witness_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "response_lengths": ValueSpec(codec="ndarray", dtype="int64"),
     "rewards": ValueSpec(codec="ndarray", dtype="float32"),
+    "critic_loss_weights": ValueSpec(codec="ndarray", dtype="float32"),
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
@@ -102,6 +103,9 @@ def convert_samples_to_train_data(
     train_data["loss_masks"] = loss_masks
 
     train_data["rollout_mask_sums"] = _compute_rollout_mask_sums(train_data["rollout_ids"], loss_masks)
+
+    if getattr(args, "critic_variance_weighted_loss", False):
+        train_data["critic_loss_weights"] = _compute_critic_loss_weights(args, samples, raw_rewards, loss_masks)
 
     # overwriting the raw reward
     if samples[0].metadata and "raw_reward" in samples[0].metadata:
@@ -174,6 +178,31 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def _compute_critic_loss_weights(args, samples, raw_rewards, loss_masks) -> list[float]:
+    """EasyPPO noise-normalized critic weights over the whole rollout batch (EasyPPO v1 trainer_base
+    _compute_advantage: sequence rewards, prompt uid groups, rows with any response token valid)."""
+    from miles.backends.training_utils.loss_hub.easyppo import compute_prompt_variance_loss_weights
+
+    rewards = torch.tensor([float(r) for r in raw_rewards], dtype=torch.float32)
+    uids = [s.group_index for s in samples]
+    assert all(u is not None for u in uids), "critic variance weights need Sample.group_index (the prompt group)"
+    valid = torch.tensor([any(m) for m in loss_masks], dtype=torch.bool)
+    weights, variances = compute_prompt_variance_loss_weights(
+        sequence_rewards=rewards,
+        sample_uids=uids,
+        beta=args.critic_variance_weight_beta,
+        w_min=args.critic_variance_weight_min,
+        w_max=args.critic_variance_weight_max,
+        valid_mask=valid,
+    )
+    logger.info(
+        f"EasyPPO critic weights: prompts={len(set(uids))} reward_var mean={variances[valid].mean().item():.4f} "
+        f"max={variances[valid].max().item():.4f} weight min={weights[valid].min().item():.3f} "
+        f"max={weights[valid].max().item():.3f}"
+    )
+    return weights.tolist()
 
 
 def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
@@ -306,6 +335,10 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
     """Whether the rollout side can precompute the full DP/mbs schedule."""
     if not has_full_schedule_config(train_parallel_config):
         return False
+    if getattr(args, "critic_global_batch_size", None) is not None:
+        # actor and critic step at different batch sizes; one shared rollout-side schedule cannot serve both,
+        # so each trainer schedules its equal-size DP shard locally
+        return False
     if is_multi_lora_enabled(args):
         return False
     if "multimodal_train_inputs" in data:
@@ -376,6 +409,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "multimodal_train_inputs",
             "response_lengths",
             "rewards",
+            "critic_loss_weights",
             "truncated",
             "loss_masks",
             "round_number",

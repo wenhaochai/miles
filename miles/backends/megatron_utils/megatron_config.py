@@ -272,6 +272,13 @@ def _compute_critic_overrides(args) -> dict[str, Any]:
         "save": args.critic_save,
         "lr": args.critic_lr,
         "lr_warmup_iters": args.critic_lr_warmup_iters,
+        # EasyPPO: the critic takes its own optimizer steps (e.g. four per rollout); its scheduler counts rollouts
+        # (opt_param_scheduler.step(increment=num_rollouts)), so --critic-lr-warmup-iters is in critic steps.
+        **(
+            {"global_batch_size": args.critic_global_batch_size}
+            if getattr(args, "critic_global_batch_size", None) is not None
+            else {}
+        ),
     }
 
 
@@ -301,7 +308,7 @@ _ROLLOUT_SHARED_ARGS: frozenset[str] = frozenset(
 
 def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Namespace:
     # TODO: support policies with different global batch sizes.
-    assert "global_batch_size" not in trainer.overrides, (
+    assert "global_batch_size" not in trainer.overrides or trainer.role == CRITIC_ROLE, (
         f"--megatron-config trainer {trainer.trainer_id!r} overrides global_batch_size; every policy has to "
         f"share the run's"
     )
