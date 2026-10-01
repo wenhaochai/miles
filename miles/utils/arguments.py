@@ -13,6 +13,7 @@ from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
     resolve_args_checkpoint_load,
+    _has_megatron_checkpoint,
     resolve_megatron_config,
 )
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
@@ -3558,6 +3559,10 @@ def miles_validate_args(args):
         args.critic_num_nodes = args.actor_num_nodes
     if args.critic_load is None:
         args.critic_load = args.load
+    elif args.megatron_to_hf_mode == "bridge" and not _has_megatron_checkpoint(args.critic_load):
+        # a fresh run's own critic dir (--critic-load = --critic-save, so the same command resumes): start from the
+        # HF weights through the bridge, as resolve_args_checkpoint_load does for the actor's --load
+        args.critic_load = args.ref_load or args.hf_checkpoint
     if args.critic_lr is None:
         args.critic_lr = args.lr
     if args.critic_global_batch_size is not None:
