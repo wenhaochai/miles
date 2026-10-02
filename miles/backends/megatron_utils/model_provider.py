@@ -192,8 +192,12 @@ def get_model_provider_func(
                 provider._pg_collection = pg_collection
             model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
             if post_process and role == "critic":
-                model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
+                # multimodal wrappers (e.g. Qwen3_5ForConditionalGeneration) keep the LM head on .language_model;
+                # replacing the wrapper's attribute leaves the vocab head in place (smoke 14850574: values [T, 124160])
+                owner = getattr(model, "language_model", None) or model
+                assert hasattr(owner, "output_layer"), f"no output_layer on {type(owner).__name__}"
+                owner.output_layer = LinearForLastLayer(
+                    input_size=owner.config.hidden_size, output_size=1, config=owner.config
                 )
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.

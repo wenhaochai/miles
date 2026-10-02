@@ -193,10 +193,12 @@ def _is_megatron_checkpoint(path: str | Path) -> bool:
 
 @contextmanager
 def _hide_critic_value_head_from_hf_load(ddp_model):
+    # the head may sit below the chunk (a multimodal wrapper's .language_model.output_layer)
     value_heads = [
-        (chunk, name, head)
+        (owner, name, head)
         for chunk in unwrap_model(ddp_model)
-        for name, head in chunk.named_children()
+        for owner in chunk.modules()
+        for name, head in owner.named_children()
         if isinstance(head, LinearForLastLayer)
     ]
     for chunk, name, _ in value_heads:
