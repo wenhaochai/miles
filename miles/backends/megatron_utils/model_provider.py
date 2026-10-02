@@ -170,7 +170,7 @@ def get_model_provider_func(
     if args.megatron_to_hf_mode == "bridge":
         from megatron.bridge import AutoBridge
 
-        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+        bridge = AutoBridge.from_hf_pretrained(args.megatron_hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
         _apply_bridge_runtime_config(provider, args)
         if role == "critic":

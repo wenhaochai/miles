@@ -141,7 +141,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     from megatron.bridge.utils.fusions import validate_rope_fusion_compatibility
 
     hf_config = load_hf_config(args.hf_checkpoint)
-    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    bridge = AutoBridge.from_hf_pretrained(args.megatron_hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
     provider.tensor_model_parallel_size = args.tensor_model_parallel_size

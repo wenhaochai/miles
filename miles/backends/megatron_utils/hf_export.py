@@ -54,7 +54,7 @@ def save_hf_model(
                 hf_checkpoint=args.hf_checkpoint,
             )
         else:
-            bridge = _get_hf_bridge(args.hf_checkpoint)
+            bridge = _get_hf_bridge(args.megatron_hf_checkpoint)
             with patch_megatron_model(model):
                 bridge.save_hf_pretrained(model, path=checkpoint_dir)
             torch.distributed.barrier(group=get_gloo_group())

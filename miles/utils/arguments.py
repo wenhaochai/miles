@@ -627,6 +627,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--megatron-hf-checkpoint",
+                type=str,
+                default=None,
+                help=(
+                    "The HF checkpoint the Megatron side (bridge model build, HF weight load, weight export to "
+                    "sglang, save_hf) reads, when it differs from --hf-checkpoint (which sglang loads). E.g. a "
+                    "text-only Qwen3_5ForCausalLM for training while sglang serves Qwen3_5ForConditionalGeneration "
+                    "with language_model_only. Defaults to --hf-checkpoint."
+                ),
+            )
+            parser.add_argument(
                 "--model-name",
                 type=str,
                 default=None,
@@ -3541,6 +3552,8 @@ def miles_validate_args(args):
             "stay alive; it cannot be combined with --load-debug-rollout-data (debug_train_only)."
         )
 
+    if getattr(args, "megatron_hf_checkpoint", None) is None:
+        args.megatron_hf_checkpoint = args.hf_checkpoint
     args.use_critic = args.advantage_estimator == "ppo"
     if args.use_critic:
         assert not args.indep_dp, (
@@ -3562,7 +3575,7 @@ def miles_validate_args(args):
     elif args.megatron_to_hf_mode == "bridge" and not _has_megatron_checkpoint(args.critic_load):
         # a fresh run's own critic dir (--critic-load = --critic-save, so the same command resumes): start from the
         # HF weights through the bridge, as resolve_args_checkpoint_load does for the actor's --load
-        args.critic_load = args.ref_load or args.hf_checkpoint
+        args.critic_load = args.ref_load or args.megatron_hf_checkpoint
     if args.critic_lr is None:
         args.critic_lr = args.lr
     if args.critic_global_batch_size is not None:
