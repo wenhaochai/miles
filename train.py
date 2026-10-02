@@ -130,12 +130,20 @@ async def train(args, *, disposer: Disposer):
         remove_rollout_data_refs(args, rollout_data_pack)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
-        if external_save or should_run_periodic_action(
+        # exit sentinel (a queue worker nearing its wall time): save this rollout synchronously, then stop cleanly
+        external_exit = getattr(args, "exit_trigger_sentinel", None) is not None and os.path.exists(
+            args.exit_trigger_sentinel
+        )
+        if external_save or external_exit or should_run_periodic_action(
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
         ):
-            await save(rollout_id, force_sync=external_save)
+            await save(rollout_id, force_sync=external_save or external_exit)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
+        if external_exit:
+            logger.info("exit sentinel %s found: saved rollout %d, exiting", args.exit_trigger_sentinel, rollout_id)
+            os.remove(args.exit_trigger_sentinel)
+            break
 
         # One predicate for both blocks: the handoff below exists to feed this eval on the last rollout.
         eval_due = should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout)

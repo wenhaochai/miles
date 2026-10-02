@@ -1554,6 +1554,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--exit-trigger-sentinel",
+                type=str,
+                default=None,
+                help=(
+                    "Path polled after every rollout: when the file exists, save that rollout's checkpoint "
+                    "synchronously, delete the file and exit the train loop (a queue worker asks a resumable run "
+                    "to stop before its allocation ends)."
+                ),
+            )
+            parser.add_argument(
                 "--custom-megatron-post-save-hook-path",
                 type=str,
                 default=None,
