@@ -114,6 +114,15 @@ def load_debug_rollout_data(args, rollout_id: int) -> tuple[list[Sample], dict]:
     return data, metadata
 
 
+def load_replay_rollout_data(args, rollout_id: int) -> tuple[list[Sample], dict]:
+    """--replay-rollout-data: one rollout of another run's --save-debug-rollout-data dump (value pretraining shared
+    across runs with the same frozen actor)."""
+    path = Path(args.replay_rollout_data.format(rollout_id=rollout_id))
+    data, metadata = _load_rollout_data_file(path)
+    logger.info(f"Replay rollout {rollout_id}: {len(data)} samples from {path}")
+    return data, metadata
+
+
 def save_debug_rollout_data(
     args, data, rollout_id, evaluation: bool, metadata: dict | None = None, trainer_model_id: str | None = None
 ) -> None:

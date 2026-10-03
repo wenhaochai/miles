@@ -6,7 +6,12 @@ from collections.abc import Sequence
 from typing import Any
 
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import (
+    RolloutDataInjectionUtil,
+    load_debug_rollout_data,
+    load_replay_rollout_data,
+    save_debug_rollout_data,
+)
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
@@ -257,6 +262,10 @@ class RolloutExecutor:
     async def _get_rollout_data(self, rollout_id, trainer_model_id: str | None = None):
         if self.args.load_debug_rollout_data is not None:
             data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
+            metrics = None
+        elif self.args.replay_rollout_data is not None and rollout_id < self.args.replay_rollout_until:
+            data, metadata = load_replay_rollout_data(self.args, rollout_id=rollout_id)
+            self.data_source.get_samples(self.args.rollout_batch_size)  # advance as a live rollout would
             metrics = None
         else:
             if not self.use_legacy_rollout_v1:

@@ -2147,6 +2147,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--replay-rollout-data",
+                type=str,
+                default=None,
+                help=(
+                    "Value pretraining shared across runs: for rollout ids below --replay-rollout-until, read the "
+                    "training samples from this template (a --save-debug-rollout-data dump of a run with the same "
+                    "frozen actor) instead of generating them; SGLang still starts, later rollouts and evals generate. "
+                    "The data source still hands out the replayed rollouts' prompts, so the prompt order and sample "
+                    "indices match a live run. Rewards can be relabeled by --custom-reward-post-process-path."
+                ),
+            )
+            parser.add_argument("--replay-rollout-until", type=int, default=0)
+            parser.add_argument(
                 "--load-debug-rollout-data",
                 type=str,
                 default=None,
