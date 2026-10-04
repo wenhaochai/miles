@@ -1617,16 +1617,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "trainer splits whatever a rollout returns into variable_rollout_samples // global_batch_size optimizer "
                 "steps (EasyPPO: the actor's 1 and the critic's 4), with rank sizes within one sample, instead of "
                 "padding the rollout to a fixed count with masked dummies (miles/utils/variable_rollout.py). Pass the "
-                "nominal rollout size, a multiple of every trainer's global batch size. Needs --calculate-per-token-loss "
-                "and a static micro-batch size.",
+                "actor's --global-batch-size (one actor step per rollout; the critic takes N // --critic-global-batch-size "
+                "steps). Needs --calculate-per-token-loss, static micro-batches and Megatron DDP without PP/EP/FSDP; it "
+                "balances tokens over DP itself (--balance-data does not apply). Producer and consumers of a replayed "
+                "rollout dump must agree on it.",
             )
             parser.add_argument(
                 "--bshd-pad-per-sample",
                 action="store_true",
                 default=False,
                 help="With --qkv-format bshd and --micro-batch-size 1, pad each sample to its own length (rounded to "
-                "the TP pad size) instead of to the longest sample of the rollout, which made every micro-batch as long "
-                "as the longest answer.",
+                "the TP pad size x --data-pad-size-multiplier, which also sets how coarse the length buckets are) instead "
+                "of to the longest sample of the rollout, which made every micro-batch as long as the longest answer.",
             )
             parser.add_argument(
                 "--critic-variance-weighted-loss",
@@ -3563,24 +3565,6 @@ def miles_validate_args(args):
     if getattr(args, "balance_by_flops", False):
         assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
 
-    if getattr(args, "variable_rollout_samples", None):
-        # the optimizer steps follow the trainers' global batch sizes; normalization must not depend on the sample
-        # count (token means), and micro-batches are planned statically per step (miles/utils/variable_rollout.py)
-        assert args.calculate_per_token_loss, "--variable-rollout-samples requires --calculate-per-token-loss"
-        assert not args.use_dynamic_batch_size, "--variable-rollout-samples plans static micro-batches"
-        assert not args.use_dynamic_global_batch_size, "--variable-rollout-samples replaces the dynamic global batch"
-        for gbs in (args.global_batch_size, getattr(args, "critic_global_batch_size", None)):
-            if gbs:
-                assert args.variable_rollout_samples % gbs == 0, (
-                    f"--variable-rollout-samples {args.variable_rollout_samples} must be a multiple of every "
-                    f"trainer's global batch size, not of {gbs}"
-                )
-    if getattr(args, "bshd_pad_per_sample", False):
-        assert args.qkv_format == "bshd" and args.micro_batch_size == 1 and not args.use_dynamic_batch_size, (
-            "--bshd-pad-per-sample needs --qkv-format bshd, --micro-batch-size 1 and no dynamic batch size "
-            "(a micro-batch takes the pad length of its first sample)"
-        )
-
     if args.eps_clip_high is None:
         args.eps_clip_high = args.eps_clip
 
@@ -4014,6 +3998,46 @@ def miles_validate_args(args):
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     _validate_deploy_component(args)
+    _validate_variable_rollout(args)
+
+
+def _validate_variable_rollout(args) -> None:
+    """--variable-rollout-samples / --bshd-pad-per-sample (miles/utils/variable_rollout.py). DP ranks may run one
+    micro-batch more than others in a step, which is safe only when no collective spans the DP group inside a
+    micro-batch: Megatron DDP without PP/VPP, dense or EP=1 MoE without a global aux loss, no FP8 delayed scaling, no
+    FSDP (review of 2026-10-04). Runs last, after --num-steps-per-rollout has set the global batch size."""
+    n = getattr(args, "variable_rollout_samples", None)
+    if n is not None:
+        name = "--variable-rollout-samples"
+        assert n > 0 and n == args.global_batch_size, (
+            f"{name} {n} must equal the actor's --global-batch-size {args.global_batch_size} (one actor step per "
+            f"rollout; the critic takes {name} // --critic-global-batch-size steps)"
+        )
+        cgbs = getattr(args, "critic_global_batch_size", None)
+        assert cgbs is None or n % cgbs == 0, f"{name} {n} must be a multiple of --critic-global-batch-size {cgbs}"
+        assert args.calculate_per_token_loss, f"{name} requires --calculate-per-token-loss (token-mean normalization)"
+        assert not args.use_dynamic_batch_size and not args.use_dynamic_global_batch_size, (
+            f"{name} plans static micro-batches; it replaces the dynamic batch sizes"
+        )
+        assert args.train_backend == "megatron", f"{name}: the fsdp backend issues collectives per micro-batch"
+        for flag in ("use_megatron_fsdp", "use_torch_fsdp2"):
+            assert not getattr(args, flag, False), f"{name} is incompatible with --{flag.replace('_', '-')}"
+        assert (getattr(args, "pipeline_model_parallel_size", 1) or 1) == 1, f"{name} needs PP = 1"
+        assert getattr(args, "virtual_pipeline_model_parallel_size", None) in (None, 1), f"{name} needs no VPP"
+        if getattr(args, "num_experts", None):
+            assert (getattr(args, "expert_model_parallel_size", 1) or 1) == 1, f"{name}: EP > 1 all-to-alls span DP"
+            assert "global" not in str(getattr(args, "moe_router_load_balancing_type", "")), (
+                f"{name}: a global aux loss reduces over DP in every forward"
+            )
+        if getattr(args, "fp8", None):
+            assert getattr(args, "fp8_recipe", "delayed") != "delayed" or getattr(args, "tp_only_amax_red", False), (
+                f"{name}: FP8 delayed scaling reduces amax over DP in every forward (use --tp-only-amax-red)"
+            )
+    if getattr(args, "bshd_pad_per_sample", False):
+        assert args.qkv_format == "bshd" and args.micro_batch_size == 1 and not args.use_dynamic_batch_size, (
+            "--bshd-pad-per-sample needs --qkv-format bshd, --micro-batch-size 1 and no dynamic batch size "
+            "(a micro-batch takes the pad length of its first sample)"
+        )
 
 
 def validate_skip_actor_forward_only(args) -> None:

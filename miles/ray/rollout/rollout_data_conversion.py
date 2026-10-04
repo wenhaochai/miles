@@ -19,7 +19,8 @@ def postprocess_rollout_data(args, data, train_parallel_config):
     # whole trailing rollouts instead.
     is_compact = any(s.rollout_id is not None for s in data)
 
-    if not args.disable_rollout_trim_samples and not is_compact:
+    # --variable-rollout-samples trains whatever count a rollout returns: nothing to trim
+    if not args.disable_rollout_trim_samples and not is_compact and not getattr(args, "variable_rollout_samples", None):
         global_batch_size = args.global_batch_size
         if args.use_dynamic_global_batch_size:
             logger.info(f"Collected {len(data)} samples from rollout to train with dynamic global batch size")

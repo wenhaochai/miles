@@ -498,10 +498,28 @@ def get_data_iterator(
     cp_size = parallel_state.cp.size
 
     num_local_samples = len(rollout_data["total_lengths"])
+    if getattr(args, "variable_rollout_samples", None):
+        # a varying sample count: this trainer's fixed number of steps, each a contiguous share of the rank's samples
+        steps = variable_rollout.num_steps(args.variable_rollout_samples, args.global_batch_size)
+        micro_batch_indices, num_microbatches = variable_rollout.plan_local_steps(
+            num_local_samples, steps, args.micro_batch_size
+        )
+        logger.info(
+            f"variable rollout: {num_local_samples} local samples -> {steps} steps, micro-batches {num_microbatches}"
+        )
+        return [
+            DataIterator(rollout_data, micro_batch_indices=micro_batch_indices) for _ in range(vpp_size)
+        ], num_microbatches
+
     assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
     global_batch_size = rollout_data.get("dynamic_global_batch_size", args.global_batch_size)
     num_local_gbs = global_batch_size // dp_size
     num_steps_per_rollout = num_local_samples // num_local_gbs
+    assert num_steps_per_rollout >= 1, (
+        f"{num_local_samples} local samples < the local batch {num_local_gbs}: no optimizer step would run. A rollout "
+        "with fewer samples than --global-batch-size (e.g. a replayed dump made with --variable-rollout-samples) "
+        "needs --variable-rollout-samples here too"
+    )
 
     if global_batch_size != args.global_batch_size:
         logger.info(
@@ -514,17 +532,6 @@ def get_data_iterator(
         for _ in range(vpp_size):
             data_iterator.append(DataIterator(rollout_data, micro_batch_size, micro_batch_indices))
         return data_iterator
-
-    if getattr(args, "variable_rollout_samples", None):
-        # a varying sample count: this trainer's fixed number of steps, each a contiguous share of the rank's samples
-        steps = variable_rollout.num_steps(args.variable_rollout_samples, args.global_batch_size)
-        micro_batch_indices, num_microbatches = variable_rollout.plan_local_steps(
-            num_local_samples, steps, args.micro_batch_size
-        )
-        logger.info(
-            f"variable rollout: {num_local_samples} local samples -> {steps} steps, micro-batches {num_microbatches}"
-        )
-        return _generate_data_iterator(rollout_data, None, micro_batch_indices), num_microbatches
 
     if not args.use_dynamic_batch_size:
         if "adapter_slots" in rollout_data and num_local_gbs % args.micro_batch_size != 0:

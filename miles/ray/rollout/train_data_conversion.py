@@ -387,7 +387,13 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     data["total_lengths"] = total_lengths
 
     if getattr(args, "variable_rollout_samples", None):
-        # any sample count: rank sizes within one, tokens balanced
+        # any sample count: rank sizes within one, tokens balanced. Every rank needs a sample for every step of the
+        # trainer with the most steps; check here, where all ranks would fail together, not on one rank
+        gbs = min(x for x in (args.global_batch_size, getattr(args, "critic_global_batch_size", None)) if x)
+        max_steps = args.variable_rollout_samples // gbs
+        assert len(total_lengths) >= dp_size * max_steps, (
+            f"rollout of {len(total_lengths)} samples < dp_size {dp_size} x {max_steps} optimizer steps"
+        )
         partitions = balanced_dp_partitions(total_lengths, dp_size)
     elif args.balance_data:
         partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
