@@ -84,11 +84,13 @@ async def train(args, *, disposer: Disposer):
             if args.use_critic and args.offload_train:
                 await model.offload()
 
+        # the data state first (a small file, never rotated): a kill during the model saves then leaves the trackers at an
+        # older iteration whose data state exists, instead of new trackers without one (the prompt order would reset)
+        await rollout_executor.save(rollout_id)
         if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
             await save_training_model(actor_model)
         if args.use_critic:
             await save_training_model(critic_model)
-        await rollout_executor.save(rollout_id)
 
     if args.num_rollout > args.start_rollout_id and args.eval_interval is not None and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
