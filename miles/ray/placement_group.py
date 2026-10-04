@@ -238,6 +238,23 @@ async def create_training_models(
             trainer_id=critic_config.trainer_id,
             resumed=resumed,
         )
+        k = critic_info.restored_rollout_id
+        if (
+            k != actor_info.restored_rollout_id
+            and getattr(args, "requested_load", None) is not None
+            and read_checkpoint_tracker_iteration(args.requested_load) is None
+            and k <= args.num_critic_only_steps
+        ):
+            # EasyPPO: train.py saves only the critic while the actor is frozen (rollout < --num-critic-only-steps),
+            # so a run stopped inside that phase resumes with a critic checkpoint and no actor one. The frozen actor
+            # still equals its initial weights, so resuming both at the critic's rollout is exact.
+            logger.info(
+                f"critic-only phase resume: no actor checkpoint under {args.requested_load}, the critic restored "
+                f"rollout {k} <= --num-critic-only-steps {args.num_critic_only_steps}: both start at rollout {k} "
+                f"with the initial actor"
+            )
+            actor_info = actor_info._replace(restored_rollout_id=k, start_rollout_id=k)
+            critic_info = critic_info._replace(start_rollout_id=k)
         assert critic_info.restored_rollout_id == actor_info.restored_rollout_id, (
             f"the actor restored to rollout {actor_info.restored_rollout_id} but its critic to "
             f"{critic_info.restored_rollout_id}"

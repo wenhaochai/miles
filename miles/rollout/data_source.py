@@ -145,11 +145,14 @@ class RolloutDataSource(DataSource):
             logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
-        if self.args.load is None:
+        # the run's own checkpoint dir: when the actor has no checkpoint yet, args.load already points at the
+        # initial weights (megatron_config.resolve_args_checkpoint_load), but the data state lives under --load
+        load_dir = getattr(self.args, "requested_load", None) or self.args.load
+        if load_dir is None:
             logger.warning("no --load: the dataset starts where a fresh run's would")
             return
 
-        path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
+        path = compute_global_dataset_state_path(load_dir, rollout_id=rollout_id)
         if not os.path.exists(path):
             logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
             return
