@@ -1610,6 +1610,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "a quarter of the actor's for four critic steps per rollout. Default: the actor's --global-batch-size.",
             )
             parser.add_argument(
+                "--variable-rollout-samples",
+                type=int,
+                default=None,
+                help="A rollout returns a varying number of samples (one per agent turn in a multi-agent game). Each "
+                "trainer splits whatever a rollout returns into variable_rollout_samples // global_batch_size optimizer "
+                "steps (EasyPPO: the actor's 1 and the critic's 4), with rank sizes within one sample, instead of "
+                "padding the rollout to a fixed count with masked dummies (miles/utils/variable_rollout.py). Pass the "
+                "nominal rollout size, a multiple of every trainer's global batch size. Needs --calculate-per-token-loss "
+                "and a static micro-batch size.",
+            )
+            parser.add_argument(
+                "--bshd-pad-per-sample",
+                action="store_true",
+                default=False,
+                help="With --qkv-format bshd and --micro-batch-size 1, pad each sample to its own length (rounded to "
+                "the TP pad size) instead of to the longest sample of the rollout, which made every micro-batch as long "
+                "as the longest answer.",
+            )
+            parser.add_argument(
                 "--critic-variance-weighted-loss",
                 action="store_true",
                 default=False,
@@ -3543,6 +3562,24 @@ def miles_validate_args(args):
 
     if getattr(args, "balance_by_flops", False):
         assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
+
+    if getattr(args, "variable_rollout_samples", None):
+        # the optimizer steps follow the trainers' global batch sizes; normalization must not depend on the sample
+        # count (token means), and micro-batches are planned statically per step (miles/utils/variable_rollout.py)
+        assert args.calculate_per_token_loss, "--variable-rollout-samples requires --calculate-per-token-loss"
+        assert not args.use_dynamic_batch_size, "--variable-rollout-samples plans static micro-batches"
+        assert not args.use_dynamic_global_batch_size, "--variable-rollout-samples replaces the dynamic global batch"
+        for gbs in (args.global_batch_size, getattr(args, "critic_global_batch_size", None)):
+            if gbs:
+                assert args.variable_rollout_samples % gbs == 0, (
+                    f"--variable-rollout-samples {args.variable_rollout_samples} must be a multiple of every "
+                    f"trainer's global batch size, not of {gbs}"
+                )
+    if getattr(args, "bshd_pad_per_sample", False):
+        assert args.qkv_format == "bshd" and args.micro_batch_size == 1 and not args.use_dynamic_batch_size, (
+            "--bshd-pad-per-sample needs --qkv-format bshd, --micro-batch-size 1 and no dynamic batch size "
+            "(a micro-batch takes the pad length of its first sample)"
+        )
 
     if args.eps_clip_high is None:
         args.eps_clip_high = args.eps_clip

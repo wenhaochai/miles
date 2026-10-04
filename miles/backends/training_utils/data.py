@@ -7,6 +7,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils import variable_rollout
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
@@ -88,6 +89,10 @@ def get_rollout_data(
         max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
+        if getattr(args, "bshd_pad_per_sample", False):  # micro-batch size 1: each sample padded to its own length
+            rollout_data["max_seq_lens"] = [
+                (n + pad_size - 1) // pad_size * pad_size for n in rollout_data["total_lengths"]
+            ]
 
     # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
     for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
@@ -509,6 +514,17 @@ def get_data_iterator(
         for _ in range(vpp_size):
             data_iterator.append(DataIterator(rollout_data, micro_batch_size, micro_batch_indices))
         return data_iterator
+
+    if getattr(args, "variable_rollout_samples", None):
+        # a varying sample count: this trainer's fixed number of steps, each a contiguous share of the rank's samples
+        steps = variable_rollout.num_steps(args.variable_rollout_samples, args.global_batch_size)
+        micro_batch_indices, num_microbatches = variable_rollout.plan_local_steps(
+            num_local_samples, steps, args.micro_batch_size
+        )
+        logger.info(
+            f"variable rollout: {num_local_samples} local samples -> {steps} steps, micro-batches {num_microbatches}"
+        )
+        return _generate_data_iterator(rollout_data, None, micro_batch_indices), num_microbatches
 
     if not args.use_dynamic_batch_size:
         if "adapter_slots" in rollout_data and num_local_gbs % args.micro_batch_size != 0:

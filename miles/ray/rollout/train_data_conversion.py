@@ -5,6 +5,7 @@ import torch
 
 from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.variable_rollout import balanced_dp_partitions
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
@@ -335,6 +336,9 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
     """Whether the rollout side can precompute the full DP/mbs schedule."""
     if not has_full_schedule_config(train_parallel_config):
         return False
+    if getattr(args, "variable_rollout_samples", None):
+        # a varying sample count is split into fixed optimizer steps on the trainer side (variable_rollout.py)
+        return False
     if getattr(args, "critic_global_batch_size", None) is not None:
         # actor and critic step at different batch sizes; one shared rollout-side schedule cannot serve both,
         # so each trainer schedules its equal-size DP shard locally
@@ -382,7 +386,10 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
-    if args.balance_data:
+    if getattr(args, "variable_rollout_samples", None):
+        # any sample count: rank sizes within one, tokens balanced
+        partitions = balanced_dp_partitions(total_lengths, dp_size)
+    elif args.balance_data:
         partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
