@@ -410,6 +410,16 @@ class MegatronTrainRayActor(TrainRayActor):
                 checkpointing_context=checkpointing_context,
             )
 
+        if (
+            self.role != "critic"
+            and load_output.loaded_rollout_id > 0
+            and not self.args.no_load_optim
+            and not self.args.finetune
+        ):
+            # resumed from this run's own checkpoint: its fp32 main params are right, its bf16 model weights may be zero
+            # (saved by a version without the rebuild in save_model), so the weights backed up below come from the masters
+            self._rebuild_params_from_main_weights()
+
         if self.role != "critic":
             self._load_auxiliary_checkpoints()
             self._switch_model("actor")
@@ -821,12 +831,28 @@ class MegatronTrainRayActor(TrainRayActor):
         return TrainStepOutput(outcome=train_step_outcome)
 
     @timer
+    @torch.no_grad()
+    def _rebuild_params_from_main_weights(self) -> None:
+        """Cast the optimizer's fp32 main params into the bf16 model params and all-gather them over DP, as every
+        optimizer step does. --offload-train keeps no host copy of the actor's param buffers (the weights backuper holds
+        the actor weights instead), so right after onload() the buffers hold zeros: save_model then wrote an all-zero
+        actor model next to correct optimizer state, and a resumed run rolled out and took its first step with that
+        model (every first rollout after a resume was random tokens, Frontier-CS team runs 2026-10-05)."""
+        for opt in getattr(self.optimizer, "chained_optimizers", [self.optimizer]):
+            opt._copy_main_params_to_model_params()
+        for model_chunk in self.model:
+            model_chunk.start_param_sync(force_sync=True)
+        torch.cuda.synchronize()
+
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self._heartbeat.bump()
         if self.args.debug_rollout_only:
             return
 
         self._finalize_pending_async_save()
+        if self.role != "critic" and self.args.offload_train:
+            # the buffers are empty after onload(): save the weights the optimizer holds, not zeros
+            self._rebuild_params_from_main_weights()
 
         save(
             rollout_id,
