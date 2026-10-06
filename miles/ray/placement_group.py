@@ -346,7 +346,15 @@ async def _maybe_log_inference_engine_weight_checksums(
     if args.debug_train_only or args.debug_rollout_only:
         return
 
-    check_weights_result = await inference_controller.check_weights(action="checksum", model_id=trainer_model_id)
+    # a diagnostic: one retry, then a warning. An engine's HTTP connection reset during this call (httpx.ReadError)
+    # ended two Frontier-CS runs right after a successful weight update (2026-10-05 04:57, 2026-10-06 05:32)
+    check_weights_result = None
+    for attempt in range(2):
+        try:
+            check_weights_result = await inference_controller.check_weights(action="checksum", model_id=trainer_model_id)
+            break
+        except Exception as e:
+            logger.warning(f"inference engine weight checksum failed (attempt {attempt + 1} of 2): {e!r}"[:500])
     if not check_weights_result:
         return
     engine_checksums = flatten_inference_engine_checksums(check_weights_result)
