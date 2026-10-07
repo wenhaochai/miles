@@ -370,7 +370,8 @@ def resolve_args_checkpoint_load(args: Namespace) -> None:
         # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
         # Mirrors the non-bridge branch below.
         if not _has_megatron_checkpoint(args.load):
-            args.load = args.ref_load or args.megatron_hf_checkpoint
+            # --megatron-hf-checkpoint defaults to --hf-checkpoint only later in parse (arguments.py), so fall back here too
+            args.load = args.ref_load or getattr(args, "megatron_hf_checkpoint", None) or args.hf_checkpoint
             args.start_rollout_id = 0
     else:
         if not _has_megatron_checkpoint(args.load):

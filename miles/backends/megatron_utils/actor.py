@@ -841,8 +841,16 @@ class MegatronTrainRayActor(TrainRayActor):
         for opt in getattr(self.optimizer, "chained_optimizers", [self.optimizer]):
             opt._copy_main_params_to_model_params()
         for model_chunk in self.model:
-            model_chunk.start_param_sync(force_sync=True)
+            # only the distributed optimizer shards params (and drops their CPU backup); without it the copy above already
+            # wrote every param, and start_param_sync asserts use_distributed_optimizer or overlap_param_gather
+            if model_chunk.ddp_config.use_distributed_optimizer:
+                model_chunk.start_param_sync(force_sync=True)
         torch.cuda.synchronize()
+        # the rebuild can silently do nothing (a precision-aware optimizer returns early; params kept in fp32 have no
+        # separate master): never save or roll out an all-zero model (audit 2026-10-07)
+        norm = torch.stack([p.detach().float().norm() for chunk in self.model for p in chunk.parameters()]).norm()
+        if not torch.isfinite(norm) or norm.item() == 0.0:
+            raise RuntimeError(f"actor params after the rebuild from the optimizer masters have norm {norm.item()}")
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self._heartbeat.bump()

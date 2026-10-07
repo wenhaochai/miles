@@ -338,6 +338,9 @@ async def update_weights(
         await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
 
 
+_checksum_failures = 0
+
+
 async def _maybe_log_inference_engine_weight_checksums(
     args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None, trainer_model_id: str | None
 ) -> None:
@@ -355,8 +358,15 @@ async def _maybe_log_inference_engine_weight_checksums(
             break
         except Exception as e:
             logger.warning(f"inference engine weight checksum failed (attempt {attempt + 1} of 2): {e!r}"[:500])
+    global _checksum_failures
     if not check_weights_result:
+        # a dead engine also fails here; generation has no read timeout, so stop after 3 failed rollouts in a row
+        # rather than hang until the wall time (audit 2026-10-07)
+        _checksum_failures += 1
+        if _checksum_failures >= 3:
+            raise RuntimeError(f"inference engine weight checksum failed after {_checksum_failures} weight updates in a row")
         return
+    _checksum_failures = 0
     engine_checksums = flatten_inference_engine_checksums(check_weights_result)
     get_event_logger().log(
         InferenceEngineWeightChecksumEvent,
