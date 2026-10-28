@@ -16,6 +16,7 @@ def uses_rollout_replay(args) -> bool:
 def enable(args) -> bool:
     routing_replay_manager.enabled = args.use_routing_replay
     routing_replay_manager.enable_check_replay_result = routing_replay_manager.enabled and args.ci_test
+    routing_replay_manager.count_mismatch = routing_replay_manager.enabled and getattr(args, "log_routing_replay_mismatch", False)
     routing_replay_manager.register_replay_list_func = register_replay_list_sequential
     return routing_replay_manager.enabled
 

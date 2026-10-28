@@ -66,6 +66,9 @@ class BaseReplayManager:
         self.enabled = False
         self.stage = "fallthrough"
         self.register_replay_list_func = None
+        # --log-routing-replay-mismatch: replayed vs own top-k, summed until pop_mismatch_counts
+        self.count_mismatch = False
+        self.mismatch_counts = None  # tokens, tokens with any differing pick, picks, differing picks (on the GPU)
 
     def create_replay(self, stream_idx: int | None = None) -> Replay:
         replay = Replay(stream_idx=stream_idx)
@@ -100,6 +103,8 @@ class BaseReplayManager:
 
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
+            if self.count_mismatch:
+                self._count_mismatch(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
             # fill padding tokens with arange to avoid invalid reading
             all_invalid = (top_indices == -1).all(dim=-1)
@@ -156,6 +161,21 @@ class BaseReplayManager:
             manager.set_current(replay)
 
         module.register_forward_pre_hook(pre_forward_hook)
+
+    @torch.no_grad()
+    def _count_mismatch(self, old_topk_fn, scores, topk, top_indices, *args, **kwargs):
+        own = old_topk_fn(scores, topk, *args, **kwargs)
+        own = (own[1] if isinstance(own, tuple) else own).view(-1, topk)
+        replay = top_indices.view(-1, topk)
+        valid = (replay != -1).any(dim=1)  # all -1: a padding token
+        hit = (replay.unsqueeze(-1) == own.unsqueeze(-2)).any(dim=-1) | (replay == -1)
+        miss = (~hit) & valid.unsqueeze(1)
+        counts = torch.stack([valid.sum(), miss.any(dim=1).sum(), valid.sum() * topk, miss.sum()]).double()
+        self.mismatch_counts = counts if self.mismatch_counts is None else self.mismatch_counts + counts
+
+    def pop_mismatch_counts(self, device) -> torch.Tensor:
+        counts, self.mismatch_counts = self.mismatch_counts, None
+        return torch.zeros(4, dtype=torch.float64, device=device) if counts is None else counts.to(device)
 
     def check_replay_result(self, old_topk_fn, scores, topk, top_indices, *args, **kwargs):
         """

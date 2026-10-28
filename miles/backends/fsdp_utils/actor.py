@@ -352,10 +352,13 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad).full_tensor()
         self.optimizer.step()
         self.lr_scheduler.step()
-        return StepMetrics(
-            grad_norm=float(grad_norm.item()),
-            extra_metrics={f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)},
-        )
+        extra = {f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)}
+        if routing_replay_manager.count_mismatch:
+            counts = routing_replay_manager.pop_mismatch_counts(torch.cuda.current_device())
+            dist.all_reduce(counts)
+            tokens, tokens_off, picks, picks_off = counts.tolist()
+            extra.update(r3_token_mismatch=tokens_off / max(tokens, 1.0), r3_pick_mismatch=picks_off / max(picks, 1.0))
+        return StepMetrics(grad_norm=float(grad_norm.item()), extra_metrics=extra)
 
     def _create_ref_model(self, ref_load_path: str | None):
         """Create a separate FSDP2 ref model. ALWAYS uses CPUOffloadPolicy (regardless of the actor's

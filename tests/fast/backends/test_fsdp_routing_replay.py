@@ -234,3 +234,11 @@ def test_resolve_num_layers_falls_back_when_text_config_lacks_depth():
 
 def test_resolve_num_layers_returns_none_when_absent():
     assert resolve_fsdp_num_layers(SimpleNamespace()) is None
+
+
+def test_enable_counts_mismatch_only_when_asked():
+    routing_replay.enable(Namespace(use_routing_replay=True, ci_test=False, log_routing_replay_mismatch=True))
+    assert routing_replay_manager.count_mismatch is True
+
+    routing_replay.enable(Namespace(use_routing_replay=False, ci_test=False, log_routing_replay_mismatch=True))
+    assert routing_replay_manager.count_mismatch is False

@@ -51,3 +51,15 @@ def test_get_topk_fn_preserves_partial_padding():
     topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
     torch.testing.assert_close(topk_fn(scores, 3), replayed_top_indices)
+
+
+def test_count_mismatch_counts_differing_picks_and_tokens():
+    # own top-2 of every row is {3, 4}; the replay agrees on row 0, differs in one pick on row 1, row 2 is padding
+    scores = torch.arange(5, dtype=torch.float32).repeat(3, 1)
+    manager = _make_replay_manager(torch.tensor([[4, 3], [4, 0], [-1, -1]], dtype=torch.int32))
+    manager.count_mismatch = True
+
+    manager.get_topk_fn(_topk, return_probs=False)(scores, 2)
+
+    torch.testing.assert_close(manager.pop_mismatch_counts("cpu"), torch.tensor([2.0, 1.0, 4.0, 1.0], dtype=torch.float64))
+    torch.testing.assert_close(manager.pop_mismatch_counts("cpu"), torch.zeros(4, dtype=torch.float64))

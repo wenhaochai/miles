@@ -1876,6 +1876,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "explicitly.",
             )
             parser.add_argument(
+                "--log-routing-replay-mismatch",
+                action="store_true",
+                default=False,
+                help="With R3: in every replayed router call, also compute the trainer's own top-k and log, with each "
+                "optimizer step, the fraction of replayed picks and of tokens (any pick) that differ from it "
+                "(train/r3_pick_mismatch, train/r3_token_mismatch). Counts only; never raises.",
+            )
+            parser.add_argument(
                 "--use-indexer-replay",
                 action="store_true",
                 default=False,
