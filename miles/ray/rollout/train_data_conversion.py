@@ -5,7 +5,7 @@ import torch
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
-from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
+from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule, pad_index
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
@@ -404,6 +404,7 @@ def split_train_data_by_dp_scheduled_raw(
         rollout_indices=data["rollout_ids"],
     )
 
+    partitions = _add_padding_rows(data, partitions)
     _log_dp_schedule_trim(args=args, data=data, partitions=partitions)
 
     logger.info(
@@ -417,6 +418,30 @@ def split_train_data_by_dp_scheduled_raw(
         shard["micro_batch_indices"] = micro_batch_indices[rank]
         shard["num_rollouts"] = num_rollouts
     return shards
+
+
+def _add_padding_rows(data: dict[str, Any], partitions: list[list[int]]) -> list[list[int]]:
+    """Resolve the schedule's padding entries (pad_index: a step too short for every rank's micro-batches): each
+    becomes a new row, a copy of its sample with an all-zero loss mask, so it runs the model and trains nothing."""
+    n = len(data["tokens"])
+    # per-row lists (raw_reward is the batch's, for logging)
+    rows = [k for k, v in data.items() if isinstance(v, list) and len(v) == n and k not in ("total_lengths", "raw_reward")]
+    resolved = []
+    for partition in partitions:
+        out = []
+        for j in partition:
+            if j >= 0:
+                out.append(j)
+                continue
+            src = pad_index(j)
+            for k in rows:
+                data[k].append(data[k][src])
+            mask = data["loss_masks"][src]
+            data["loss_masks"][-1] = [0] * len(mask) if isinstance(mask, list) else mask * 0
+            data["total_lengths"].append(data["total_lengths"][src])
+            out.append(len(data["tokens"]) - 1)
+        resolved.append(out)
+    return resolved
 
 
 def _log_dp_schedule_trim(*, args, data: dict[str, Any], partitions: list[list[int]]) -> None:

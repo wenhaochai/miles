@@ -26,11 +26,18 @@ class TrainParallelConfig(FrozenStrictBaseModel):
 
 
 class DPSchedule(NamedTuple):
-    partitions: list[list[int]]  # (num_ranks, num_local_samples): global sample indices
+    # (num_ranks, num_local_samples): global sample indices; a negative entry -(i + 1) is a padding row, a copy of
+    # sample i that trains nothing (pad_index), for a step too short to give every rank its micro-batches
+    partitions: list[list[int]]
     # (num_ranks, num_local_microbatches, num_samples_in_microbatch): indices into partitions[rank]
     micro_batch_indices: list[list[list[int]]]
     num_microbatches: list[int]  # (num_steps,): shared micro-batch counts for every rank
     num_rollouts: list[int]  # (num_steps,): distinct rollout counts
+
+
+def pad_index(i: int) -> int:
+    """The partitions entry of a zero-weight padding copy of sample ``i`` (and back: pad_index(pad_index(i)) == i)."""
+    return -(i + 1)
 
 
 def _calculate_workloads(step_lengths, args):
@@ -115,13 +122,13 @@ def build_dp_schedule(
             else:
                 step_micro_batches = first_fit_decreasing_pack(step_lengths, max_per_bin)
             # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches. A step
-            # with too few samples for that (long samples, many over the token budget) takes the multiple below
-            # instead: its samples balanced by tokens over that many micro-batches, some then over the budget.
+            # with too few samples for that (long samples, many over the token budget) gets one sample per
+            # micro-batch and the rest padding micro-batches: a zero-weight copy of its shortest sample each.
             target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
             if target > len(sample_indices):
-                step_micro_batches = get_seqlen_balanced_partitions(
-                    step_lengths, len(sample_indices) // align_to * align_to, equal_size=False
-                )
+                shortest = min(range(len(step_lengths)), key=lambda i: step_lengths[i])
+                step_micro_batches = [[i] for i in range(len(sample_indices))]
+                step_micro_batches += [[pad_index(shortest)]] * (target - len(sample_indices))
             elif target != len(step_micro_batches):
                 expand_bins_by_splitting(step_micro_batches, target, step_lengths)
                 assert len(step_micro_batches) == target, (
@@ -155,7 +162,10 @@ def build_dp_schedule(
             if balance_by_flops:
                 weights = [sum(workloads[i] for i in micro_batch) for micro_batch in step_micro_batches]
             else:
-                weights = [sum(step_lengths[i] for i in micro_batch) for micro_batch in step_micro_batches]
+                weights = [
+                    sum(step_lengths[i if i >= 0 else pad_index(i)] for i in micro_batch)
+                    for micro_batch in step_micro_batches
+                ]
             rank_micro_batch_ids = get_seqlen_balanced_partitions(weights, dp_size, equal_size=True)
         else:
             rank_micro_batch_ids = [list(range(rank, len(step_micro_batches), dp_size)) for rank in range(dp_size)]
@@ -164,7 +174,9 @@ def build_dp_schedule(
             for k in micro_batch_ids:
                 micro_batch = step_micro_batches[k]
                 local_start = len(partitions[rank])
-                partitions[rank].extend(sample_indices[i] for i in micro_batch)
+                partitions[rank].extend(
+                    sample_indices[i] if i >= 0 else pad_index(sample_indices[pad_index(i)]) for i in micro_batch
+                )
                 micro_batch_indices[rank].append(list(range(local_start, local_start + len(micro_batch))))
 
     return DPSchedule(

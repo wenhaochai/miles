@@ -1111,6 +1111,21 @@ class TestSplitTrainDataByDpScheduled:
                 total = sum(lengths[partition[i]] for i in mbs)
                 assert total <= 6 or len(mbs) == 1
 
+    def test_too_few_samples_pad_with_zero_weight_copies(self):
+        """3 samples, all over the token cap, for dp 2: one sample per micro-batch plus one padding row, a copy of the
+        shortest sample with an all-zero loss mask; every rank 2 micro-batches."""
+        args = make_args(balance_data=False, micro_batch_size=1, use_dynamic_batch_size=True, max_tokens_per_gpu=4)
+        lengths = [9, 7, 5]
+        data = _make_split_data(3, lengths=lengths)
+        data["dynamic_global_batch_size"] = 3
+        shards = split_train_data_by_dp_scheduled_raw(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+        assert [shard["num_microbatches"] for shard in shards] == [[2], [2]]
+        rows = [(len(t), sum(m)) for shard in shards for t, m in zip(shard["tokens"], shard["loss_masks"])]
+        assert sorted(rows) == [(5, 0), (5, 5), (7, 7), (9, 9)]
+        assert all(len(mb) == 1 for shard in shards for mb in shard["micro_batch_indices"])
+        assert len(data["total_lengths"]) == 4 and data["total_lengths"][3] == 5
+
     def test_dynamic_gbs_multi_step(self):
         """16 samples with dynamic_global_batch_size=8 -> 2 steps."""
         args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
