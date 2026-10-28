@@ -222,6 +222,7 @@ but treat it as best-effort until it passes the checks below.
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |
 | DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` |
 | Inkling / Inkling-Small | `inkling` |
+| Recursive Flint | `flint` |
 | Unregistered model or custom template (best-effort) | `default` |
 
 More model families and verification history live in

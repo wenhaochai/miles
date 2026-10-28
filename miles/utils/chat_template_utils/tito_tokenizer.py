@@ -549,6 +549,33 @@ class GLM53TITOTokenizer(GLM47TITOTokenizer):
     )
 
 
+class FlintTITOTokenizer(GLM47TITOTokenizer):
+    """Recursive Flint: GLM-style role markers, the checkpoint's own template.
+
+    Flint ends a turn with one of its stop tokens: ``<|observation|>``, ``<|user|>`` or ``<|developer|>`` (the next
+    message's start token in the template) or ``<|end_of_text|>`` (rendered nowhere); the template closes an
+    assistant message with no token. ``merge_tokens`` strips any of them from the end of the prefix, as the GLM
+    boundary does, so the next prompt is the template's own rendering, and samples trim that one stop token.
+    """
+
+    reasoning_parser = "flint"
+    tool_call_parser = "flint"
+
+    FIXED_TEMPLATE = FixedTemplate(template=None)
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+    ):
+        super().__init__(tokenizer, chat_template_kwargs, assistant_start_str)
+        self._ambiguous_boundary_ids = {
+            tokenizer.convert_tokens_to_ids(t) for t in ("<|observation|>", "<|user|>", "<|developer|>", "<|end_of_text|>")
+        }
+        self.trailing_token_ids = frozenset(self._ambiguous_boundary_ids)
+
+
 # ---------------------------------------------------------------------------
 # Nemotron 3 implementation
 # ---------------------------------------------------------------------------
@@ -1088,6 +1115,7 @@ class TITOTokenizerType(StrEnum):
     DEEPSEEKV4 = "deepseekv4"
     DEEPSEEKV41 = "deepseekv41"
     INKLING = "inkling"
+    FLINT = "flint"
 
     @classmethod
     def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
@@ -1127,6 +1155,8 @@ class TITOTokenizerType(StrEnum):
                 return DeepSeekV41TITOTokenizer
             case cls.INKLING:
                 return InklingTITOTokenizer
+            case cls.FLINT:
+                return FlintTITOTokenizer
             case _:
                 raise ValueError(f"Unknown TITOTokenizerType: {t!r}")
 
