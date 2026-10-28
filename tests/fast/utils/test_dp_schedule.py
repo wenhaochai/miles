@@ -210,6 +210,26 @@ def test_dynamic_oversized_sample_lands_alone():
     assert found
 
 
+def test_dynamic_too_few_samples_to_split_merges_down_to_the_multiple_below():
+    """Long-context rollouts: 6 samples, 5 of them over the budget, pack into 6 bins for dp 4; 8 bins would need
+    more samples than there are, so the samples are balanced over 4 micro-batches, one per rank, every sample kept."""
+    total_lengths = [15, 14, 13, 12, 11, 2]
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
+    tp = make_tp(dp_size=4)
+
+    partitions, mbi, nmb, num_rollouts_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=6, rollout_indices=list(range(6))
+    )
+
+    assert_invariants(
+        partitions, mbi, nmb, dp_size=4, expected_global_sample_indices=range(6), total_lengths=total_lengths
+    )
+    assert nmb == [1]
+    assert num_rollouts_per_step == [6]
+    # balanced: the largest micro-batch is 11 + 12 = 23 tokens (the optimum), not a merge of two leftovers
+    assert max(sum(total_lengths[partitions[r][i]] for i in mb) for r in range(4) for mb in mbi[r]) == 23
+
+
 def test_dynamic_with_vpp_rounds_to_mb_group():
     """num_microbatches per rank should be a multiple of mb_group when vpp_size > 1."""
     total_lengths = [4] * 32

@@ -114,9 +114,15 @@ def build_dp_schedule(
                     step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
             else:
                 step_micro_batches = first_fit_decreasing_pack(step_lengths, max_per_bin)
-            # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
+            # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches. A step
+            # with too few samples for that (long samples, many over the token budget) takes the multiple below
+            # instead: its samples balanced by tokens over that many micro-batches, some then over the budget.
             target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
-            if target != len(step_micro_batches):
+            if target > len(sample_indices):
+                step_micro_batches = get_seqlen_balanced_partitions(
+                    step_lengths, len(sample_indices) // align_to * align_to, equal_size=False
+                )
+            elif target != len(step_micro_batches):
                 expand_bins_by_splitting(step_micro_batches, target, step_lengths)
                 assert len(step_micro_batches) == target, (
                     f"dynamic path: could only produce {len(step_micro_batches)} micro-batches after maximal "

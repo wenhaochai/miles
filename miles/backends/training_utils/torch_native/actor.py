@@ -88,7 +88,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
 
     @property
     def train_parallel_config(self) -> TrainParallelConfig:
-        return get_parallel_state().train_parallel_config(supports_precomputed_schedule=False)
+        # the rollout side plans the steps (samples of one rollout train in one step, global_batch_size counts
+        # rollouts) and every rank gets the same micro-batch count; get_data_iterator takes that plan when present
+        return get_parallel_state().train_parallel_config(supports_precomputed_schedule=True)
 
     def _build_weight_updater(self, model, iterator_factory: Callable) -> WeightUpdater:
         self._published_weight_version = 0
@@ -204,7 +206,13 @@ class TorchNativeTrainRayActor(TrainRayActor):
         log_rollout_data(rollout_id, self.args, rollout_data)
 
         with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
-            self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
+            self._optimizer_steps(
+                runner,
+                data_iterator,
+                num_microbatches,
+                rollout_id,
+                num_rollouts=rollout_data.get("num_rollouts"),   # the rollout-side schedule's per-step counts
+            )
         routing_replay.reset()
 
         self.prof.step(rollout_id=rollout_id)
@@ -245,7 +253,12 @@ class TorchNativeTrainRayActor(TrainRayActor):
         return aggregate_forward_results(forward_store, data_iterator, args, store_prefix)
 
     def _optimizer_steps(
-        self, runner: StepRunner, data_iterator: DataIterator, num_microbatches: list[int], rollout_id: int
+        self,
+        runner: StepRunner,
+        data_iterator: DataIterator,
+        num_microbatches: list[int],
+        rollout_id: int,
+        num_rollouts: list[int] | None = None,
     ) -> None:
         args = self.args
         num_step_tokens = _count_step_loss_tokens(data_iterator, num_microbatches)
@@ -258,7 +271,14 @@ class TorchNativeTrainRayActor(TrainRayActor):
             progress = tqdm(range(microbatches), desc="actor_train", disable=dist.get_rank() != 0)
             batches = self._fetch_batches(self.prof.iterate_train_actor(progress), data_iterator, keys)
             losses_reduced = runner.forward_backward_step(
-                batches, partial(_step_loss, args, microbatches, num_step_tokens[step_id])
+                batches,
+                partial(
+                    _step_loss,
+                    args,
+                    microbatches,
+                    num_step_tokens[step_id],
+                    num_rollouts=None if num_rollouts is None else num_rollouts[step_id],
+                ),
             )
             metrics = runner.apply_step()
 
@@ -329,7 +349,12 @@ def _count_step_loss_tokens(data_iterator: DataIterator, num_microbatches: list[
 
 
 def _step_loss(
-    args, num_microbatches: int, num_step_tokens: torch.Tensor, logits: torch.Tensor, batch: dict
+    args,
+    num_microbatches: int,
+    num_step_tokens: torch.Tensor,
+    logits: torch.Tensor,
+    batch: dict,
+    num_rollouts: int | None = None,
 ) -> tuple[torch.Tensor, dict]:
     loss, _normalizer, log_dict = loss_function(
         args=args,
@@ -337,6 +362,7 @@ def _step_loss(
         num_microbatches=num_microbatches,
         logits=logits,
         apply_megatron_loss_scaling=False,
+        num_rollouts=num_rollouts,
         num_step_tokens=num_step_tokens,
     )
     return loss, log_dict

@@ -103,7 +103,7 @@ def step(monkeypatch):
     monkeypatch.setattr(
         TorchNativeTrainRayActor,
         "_optimizer_steps",
-        lambda self, runner, it, n, rollout_id: calls["steps"].append(runner),
+        lambda self, runner, it, n, rollout_id, num_rollouts=None: calls["steps"].append(runner),
     )
     monkeypatch.setattr(base_module, "compute_advantages_and_returns", lambda args, data: data.update(adv=True))
     monkeypatch.setattr(base_module, "log_rollout_data", lambda rid, args, data: None)

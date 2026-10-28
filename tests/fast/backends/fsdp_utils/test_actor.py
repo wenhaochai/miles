@@ -137,4 +137,4 @@ class TestFSDPTrainParallelConfigWiring:
         assert received[0].dp_size == fsdp_three_rank_state.effective_dp.size == 3
         assert received[0].cp_size == 1
         assert not received[0].independent_dp
-        assert not received[0].supports_precomputed_schedule
+        assert received[0].supports_precomputed_schedule
