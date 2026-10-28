@@ -1,5 +1,6 @@
 import argparse
 
+from sglang.srt.plugins import load_plugins
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import get_device
 
@@ -9,6 +10,7 @@ _ALWAYS_RENDER_FIELDS = ("trust_remote_code", "model_path", "host", "port", "dev
 
 
 def server_args_to_argv(server_args_dict: dict) -> list[str]:
+    load_plugins()  # as SGLang's own processes do: plugins register parser and backend names the check accepts
     server_args_dict = {**server_args_dict, "device": _explicit_device(server_args_dict.get("device"))}
     return render_cli_argv(
         server_args_dict,
@@ -20,6 +22,7 @@ def server_args_to_argv(server_args_dict: dict) -> list[str]:
 
 
 def parse_server_args_argv(argv: list[str]) -> ServerArgs:
+    load_plugins()
     return ServerArgs.from_cli_args(_make_cli_parser().parse_args(argv))
 
 
