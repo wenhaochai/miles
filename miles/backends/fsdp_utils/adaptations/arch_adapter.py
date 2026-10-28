@@ -25,6 +25,9 @@ class ArchAdapter:
     verified: bool = False
     # None means the architecture has no MoE router to replay.
     routing_replay: RoutingReplayAdapter | None = None
+    # True when the model's forward takes ``head_rows`` / ``head_ids`` and returns the log-probabilities of those ids
+    # at those rows in place of full logits (see the actor's ``_head_kwargs``).
+    fused_head: bool = False
 
     def resolve_precision(self, base: PrecisionPolicy, args: Namespace) -> PrecisionPolicy:
         """Adjust the backend's default precision policy for this architecture."""

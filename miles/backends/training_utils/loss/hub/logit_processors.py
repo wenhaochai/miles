@@ -181,7 +181,18 @@ def get_log_probs_and_entropy(
                     f"sampling-mask length {len(sampling_mask)} != response length "
                     f"{response_length} for sample {sample_index}"
                 )
-    if args.log_probs_backend == "fused":
+    if getattr(args, "fused_head_log_probs", False):
+        res = _head_log_probs_and_entropy(
+            logits,
+            args=args,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            with_entropy=with_entropy,
+            max_seq_lens=max_seq_lens,
+            rollout_sampling_mask=rollout_sampling_mask,
+        )
+    elif args.log_probs_backend == "fused":
         assert rollout_sampling_mask is None, "--log-probs-backend fused does not take a sampling mask"
         res = _fused_log_probs_and_entropy(
             logits,
@@ -217,6 +228,36 @@ def get_log_probs_and_entropy(
             max_seq_lens=max_seq_lens,
         )
 
+    return res
+
+
+def _head_log_probs_and_entropy(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    with_entropy: bool,
+    max_seq_lens: list[int] | None,
+    rollout_sampling_mask: Sequence[RolloutSamplingMask] | None,
+) -> dict[str, list[torch.Tensor]]:
+    """``logits`` from a ``fused_head`` model: column 0 is each response row's next-token log-prob, the last its
+    entropy (no-grad passes only; see the FSDP actor's ``_head_kwargs``)."""
+    assert rollout_sampling_mask is None, "a fused head scores the full vocabulary, not a sampling mask"
+    res = {"log_probs": [], **({"entropy": []} if with_entropy else {})}
+    for chunk, _tokens in get_responses(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+    ):
+        res["log_probs"].append(chunk[:, 0])
+        if with_entropy:
+            assert chunk.size(-1) >= 2 and not chunk.requires_grad, "the head returns entropy in no-grad passes only"
+            res["entropy"].append(chunk[:, -1])
     return res
 
 

@@ -83,6 +83,8 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         self.load_hf_assets(with_processor=True)
 
         self.arch_adapter = resolve_arch_adapter(self.hf_config)
+        # the loss reads head columns instead of logits for an architecture that scores its own head
+        self.args.fused_head_log_probs = self.arch_adapter.fused_head
         validate_hf_config(self.hf_config, verified=self.arch_adapter.verified, rank=dist.get_rank())
         self.precision_policy = self.arch_adapter.resolve_precision(default_precision_policy(args), args)
 
@@ -413,7 +415,43 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if batch.get("multimodal_train_inputs"):
             model_args.update(batch["multimodal_train_inputs"])
 
+        if self.arch_adapter.fused_head:
+            model_args.update(self._head_kwargs(batch, batch["tokens"].size(-1)))
+
         return model_args
+
+    def _head_kwargs(self, batch: dict, num_rows: int) -> dict:
+        """What a ``fused_head`` model scores in place of full logits: every response row's next token and, when the
+        batch carries them, the rollout's score-centering candidates (the loss's ``_candidate_ids``), so its output is
+        [1, T, 1 + K]; no-grad passes add an entropy column. The rows are the loss's own response layout."""
+        from miles.backends.training_utils.data.context_parallel import iter_local_response_rows
+        from miles.backends.training_utils.loss.hub.score_centering_loss import _candidate_ids
+
+        with_candidates = batch.get("rollout_topk_log_probs") is not None
+        rows, ids = [], []
+        layout = iter_local_response_rows(
+            num_rows,
+            unconcat_tokens=batch["unconcat_tokens"],
+            total_lengths=batch["total_lengths"],
+            response_lengths=batch["response_lengths"],
+            qkv_format=self.args.qkv_format,
+            allgather_cp=self.args.allgather_cp,
+            max_seq_lens=batch.get("max_seq_lens"),
+            include_response_indices=with_candidates,
+        )
+        for i, (row_ranges, tokens, indices) in enumerate(layout):
+            rows.extend(torch.arange(start, end) for start, end in row_ranges)
+            columns = [tokens.view(-1, 1).long().cpu()]
+            if with_candidates:
+                columns.append(_candidate_ids(batch, i, torch.as_tensor(list(indices), dtype=torch.long)))
+            ids.append(torch.cat(columns, dim=1))
+        device = batch["tokens"].device
+        return {
+            "head_rows": torch.cat(rows).to(device),
+            "head_ids": torch.cat(ids).to(device),
+            "head_temperature": self.args.rollout_temperature,
+            "head_entropy": not torch.is_grad_enabled(),
+        }
 
 
 @torch.no_grad()

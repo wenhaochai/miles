@@ -8,6 +8,7 @@ runs on the stock HF path.
 from types import MappingProxyType
 
 from miles.backends.fsdp_utils.adaptations.arch_adapter import ArchAdapter
+from miles.backends.fsdp_utils.adaptations.specs.flint import FlintAdapter
 from miles.backends.fsdp_utils.adaptations.specs.glm4_moe_lite import Glm4MoeLiteAdapter
 from miles.backends.fsdp_utils.adaptations.specs.nemotron_h import NemotronHAdapter
 from miles.backends.fsdp_utils.adaptations.specs.qwen3 import Qwen3Adapter
@@ -16,6 +17,7 @@ from miles.backends.fsdp_utils.adaptations.specs.qwen3_moe import Qwen3MoeAdapte
 from miles.backends.fsdp_utils.adaptations.specs.qwen3_vl import Qwen3VLAdapter
 
 _ADAPTERS: tuple[ArchAdapter, ...] = (
+    FlintAdapter(),
     Glm4MoeLiteAdapter(),
     NemotronHAdapter(),
     Qwen3Adapter(),
