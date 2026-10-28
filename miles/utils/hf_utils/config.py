@@ -65,6 +65,12 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
 
 _REGISTERED_ALIASES: set[str] = set()
 
+# Architectures whose modeling code ships outside transformers: model_type -> (module, config class, causal-LM class),
+# registered with the Auto classes whenever the module is importable (it is put on PYTHONPATH by the run).
+_EXTERNAL_MODELS: dict[str, tuple[str, str, str]] = {
+    "flint": ("flint_hf", "FlintConfig", "FlintForCausalLM"),
+}
+
 
 def register_hf_config_aliases() -> None:
     """Register miles model_type aliases with transformers. Idempotent.
@@ -108,6 +114,18 @@ def register_hf_config_aliases() -> None:
         import sglang.srt.configs.inkling  # noqa: F401
     except ImportError:
         pass
+
+    for model_type, (module_name, config_name, model_name) in _EXTERNAL_MODELS.items():
+        if model_type in _REGISTERED_ALIASES or model_type in CONFIG_MAPPING_NAMES:
+            continue
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        config_cls = getattr(module, config_name)
+        AutoConfig.register(model_type, config_cls, exist_ok=True)
+        AutoModelForCausalLM.register(config_cls, getattr(module, model_name), exist_ok=True)
+        _REGISTERED_ALIASES.add(model_type)
 
 
 def load_hf_config(

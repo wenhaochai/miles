@@ -1,24 +1,12 @@
 """Flint (Recursive Flint, model_type ``flint``) on the FSDP backend. The model definition is ``flint_hf`` from the
-mas-rl repository (on PYTHONPATH); this module only registers it with transformers' Auto classes and supplies the
-training kernels it leaves pluggable: fused MoE experts and the rollout-routing-replay hook on its expert selection."""
+mas-rl repository (on PYTHONPATH; hf_utils.config registers it with transformers' Auto classes); this module supplies
+the training kernels it leaves pluggable: fused MoE experts and the rollout-routing-replay hook on its expert
+selection."""
 
 import torch
 
 from miles.kernels.moe.fused_experts import fused_experts
 from miles.utils.replay_base import routing_replay_manager
-
-
-def register_flint() -> None:
-    """Let ``AutoModelForCausalLM.from_pretrained`` build Flint checkpoints (their config has no auto_map)."""
-    from transformers import AutoConfig, AutoModelForCausalLM
-
-    from flint_hf import FlintConfig, FlintForCausalLM
-
-    try:
-        AutoConfig.register("flint", FlintConfig)
-        AutoModelForCausalLM.register(FlintConfig, FlintForCausalLM)
-    except ValueError:  # already registered in this process (actor and ref model)
-        pass
 
 
 def fused_flint_experts(experts, x: torch.Tensor, weights: torch.Tensor, ids: torch.Tensor) -> torch.Tensor:
