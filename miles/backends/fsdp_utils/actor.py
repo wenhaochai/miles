@@ -352,6 +352,9 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad).full_tensor()
         self.optimizer.step()
         self.lr_scheduler.step()
+        # free the gradients now, not at the next step's zero_grad: with FSDP CPU offload they are an fp32 copy of the
+        # model in host memory (160 GB for Flint) that would otherwise sit there through the next rollout
+        self.optimizer.zero_grad(set_to_none=True)
         extra = {f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)}
         if routing_replay_manager.count_mismatch:
             counts = routing_replay_manager.pop_mismatch_counts(torch.cuda.current_device())

@@ -39,6 +39,7 @@ class OptimizerState(Stateful):
         self.optimizer = optimizer
 
     def state_dict(self):
+        _init_adam_state(self.optimizer)
         _, optimizer_state_dict = get_state_dict(self.model, optimizers=self.optimizer)
         return {"optim": optimizer_state_dict}
 
@@ -46,6 +47,23 @@ class OptimizerState(Stateful):
         set_state_dict(
             self.model, optimizers=self.optimizer, model_state_dict=None, optim_state_dict=state_dict["optim"]
         )
+
+
+def _init_adam_state(optimizer) -> None:
+    """Give a fresh (Adam)W optimizer its state as zeros before a checkpoint loads into it, in place. Otherwise
+    get_state_dict initializes it with a step on zero gradients (torch's _init_optim_state), which with FSDP CPU offload
+    allocates a gradient copy of the model on the host on top of the state: the w649 resume went over the job's 880 GB
+    there. The loaded values replace these zeros (step included)."""
+    if optimizer.state or not isinstance(optimizer, torch.optim.Adam | torch.optim.AdamW):
+        return
+    for group in optimizer.param_groups:
+        for p in group["params"]:
+            if p.requires_grad:
+                optimizer.state[p] = {
+                    "step": torch.zeros((), dtype=torch.float32),
+                    "exp_avg": torch.zeros_like(p, memory_format=torch.preserve_format),
+                    "exp_avg_sq": torch.zeros_like(p, memory_format=torch.preserve_format),
+                }
 
 
 class LRSchedulerState(Stateful):
