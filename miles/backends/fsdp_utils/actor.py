@@ -475,16 +475,21 @@ def _rss_gb() -> float:
 
 
 def _trim_host_memory(when: str) -> None:
-    """Hand freed host memory back to the system (glibc keeps freed blocks in its arenas: with FSDP CPU offload the
-    freed gradients, 160 GB for Flint, stayed in the job's memory). Logs this rank's RSS before and after."""
+    """Hand freed host memory back to the system: torch's pinned-memory cache, then glibc's arenas. Logs this rank's
+    RSS before, after each."""
     import ctypes
 
     before = _rss_gb()
+    # FSDP's CPU offload keeps the gradients in pinned host memory, which torch's host caching allocator holds on to
+    # after they are freed (malloc_trim cannot reach it: w663 grew 666 -> 845 GB at its first step and stayed there)
+    torch._C._host_emptyCache()
+    pinned = _rss_gb()
     try:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except OSError:
-        return
-    logger.info(f"[Rank {dist.get_rank()}] host RSS {when}: {before:.1f} -> {_rss_gb():.1f} GB (malloc_trim)")
+        pass
+    logger.info(f"[Rank {dist.get_rank()}] host RSS {when}: {before:.1f} -> {pinned:.1f} (pinned cache emptied) -> "
+                f"{_rss_gb():.1f} GB (malloc_trim)")
 
 
 def _support_ids(mask, indices, width: int) -> torch.Tensor:
