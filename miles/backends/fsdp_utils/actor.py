@@ -355,6 +355,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # free the gradients now, not at the next step's zero_grad: with FSDP CPU offload they are an fp32 copy of the
         # model in host memory (160 GB for Flint) that would otherwise sit there through the next rollout
         self.optimizer.zero_grad(set_to_none=True)
+        _trim_host_memory("after the optimizer step")
         extra = {f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)}
         if routing_replay_manager.count_mismatch:
             counts = routing_replay_manager.pop_mismatch_counts(torch.cuda.current_device())
@@ -466,6 +467,24 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             "head_temperature": self.args.rollout_temperature,
             "head_entropy": not torch.is_grad_enabled(),
         }
+
+
+def _rss_gb() -> float:
+    with open("/proc/self/status") as f:
+        return next(int(line.split()[1]) for line in f if line.startswith("VmRSS:")) / 2**20
+
+
+def _trim_host_memory(when: str) -> None:
+    """Hand freed host memory back to the system (glibc keeps freed blocks in its arenas: with FSDP CPU offload the
+    freed gradients, 160 GB for Flint, stayed in the job's memory). Logs this rank's RSS before and after."""
+    import ctypes
+
+    before = _rss_gb()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:
+        return
+    logger.info(f"[Rank {dist.get_rank()}] host RSS {when}: {before:.1f} -> {_rss_gb():.1f} GB (malloc_trim)")
 
 
 def _support_ids(mask, indices, width: int) -> torch.Tensor:
