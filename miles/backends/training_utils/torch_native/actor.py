@@ -130,6 +130,14 @@ class TorchNativeTrainRayActor(TrainRayActor):
     def sleep(self) -> None:
         if self.args.offload_train:
             self._move_train_state(to_host=True)
+        else:
+            # the train state stays where it is (FSDP CPU offload keeps parameters and optimizer on the host, and turns
+            # offload_train off), but the caching allocator still holds the step's activations: hand them back, or a
+            # colocated engine cannot resume its weights and KV (w633: torch_memory_saver resume OOM after a 128k step)
+            print_memory("before releasing the trainer's cached GPU memory")
+            clear_memory()
+            dist.barrier(group=get_gloo_group())
+            print_memory("after releasing the trainer's cached GPU memory")
 
     @timer
     def wake_up(self) -> None:

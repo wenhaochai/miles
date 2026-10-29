@@ -337,3 +337,17 @@ class TestFailedTargetStopsTraining:
         assert actor._published_weight_version == 3
         assert all(cell_id in str(raised.value) for cell_id in failed_cell_ids)
         actor.weight_updater.verify_engine_version.assert_not_called()
+
+
+def test_sleep_without_offload_train_still_releases_cached_gpu_memory(monkeypatch):
+    """FSDP CPU offload turns offload_train off (the state already lives on the host); sleep must still empty the
+    caching allocator, or a colocated engine cannot resume (w633)."""
+    calls = []
+    monkeypatch.setattr(base_module, "clear_memory", lambda *a, **k: calls.append("clear"))
+    monkeypatch.setattr(base_module, "print_memory", lambda *a, **k: None)
+    monkeypatch.setattr(base_module.dist, "barrier", lambda *a, **k: calls.append("barrier"))
+    monkeypatch.setattr(base_module, "get_gloo_group", lambda: None)
+    actor = _Provider()
+    actor.args = make_args(offload_train=False)
+    TorchNativeTrainRayActor.sleep(actor)
+    assert calls == ["clear", "barrier"]
