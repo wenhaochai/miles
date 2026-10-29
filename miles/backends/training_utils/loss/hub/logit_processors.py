@@ -231,6 +231,27 @@ def get_log_probs_and_entropy(
     return res
 
 
+def support_log_probs_from_head(head: torch.Tensor, valid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sampling-support log-probs from a fused head's full-vocabulary ones (``_SupportLogProbs``' semantics).
+
+    ``head`` [R, 1 + W]: the full-vocabulary log-probs of each row's sampled token (column 0) and of its support ids
+    (columns 1..W, those where ``valid`` [R, W]). The full normalizer is shared, so the support's log-probs are the
+    full ones minus their log-sum-exp over the support; it cancels from the gradient as well. Returns the log-probs
+    over the support (0 where an id is invalid, and for a row without support) and the support's entropy.
+
+    A row whose support is its sampled token alone has log-probs identically 0 and no gradient, as in
+    ``_SupportLogProbs``' exact backward: score centering's upstream gradient there is huge (its tail mass is 0; ~1e5
+    in the tests), and autograd's cancellation through the normalizer would leave that times float rounding."""
+    has_support = valid.any(-1, keepdim=True)
+    support = head[:, 1:].masked_fill(~valid, -torch.inf)
+    norm = torch.logsumexp(torch.where(has_support, support, 0.0), dim=-1, keepdim=True)
+    certain = (valid.sum(-1, keepdim=True) == 1) & (head[:, :1] == head[:, 1:2])
+    keep = torch.cat((has_support, valid & has_support), dim=-1) & ~certain
+    logp = torch.where(keep, head - norm, 0.0)
+    p = torch.where(valid & has_support, logp[:, 1:].exp(), 0.0)
+    return logp, -(p * logp[:, 1:]).sum(-1)
+
+
 def _head_log_probs_and_entropy(
     logits: torch.Tensor,
     *,
@@ -243,8 +264,19 @@ def _head_log_probs_and_entropy(
     rollout_sampling_mask: Sequence[RolloutSamplingMask] | None,
 ) -> dict[str, list[torch.Tensor]]:
     """``logits`` from a ``fused_head`` model: column 0 is each response row's next-token log-prob, the last its
-    entropy (no-grad passes only; see the FSDP actor's ``_head_kwargs``)."""
-    assert rollout_sampling_mask is None, "a fused head scores the full vocabulary, not a sampling mask"
+    entropy (no-grad passes only; see the FSDP actor's ``_head_kwargs``). With a sampling mask the actor also scored
+    each row's support (columns 1..W, padded with -1), and the log-prob and entropy are those over the support."""
+    if rollout_sampling_mask is not None:
+        return _head_support_log_probs_and_entropy(
+            logits,
+            args=args,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            with_entropy=with_entropy,
+            max_seq_lens=max_seq_lens,
+            rollout_sampling_mask=rollout_sampling_mask,
+        )
     res = {"log_probs": [], **({"entropy": []} if with_entropy else {})}
     for chunk, _tokens in get_responses(
         logits,
@@ -258,6 +290,43 @@ def _head_log_probs_and_entropy(
         if with_entropy:
             assert chunk.size(-1) >= 2 and not chunk.requires_grad, "the head returns entropy in no-grad passes only"
             res["entropy"].append(chunk[:, -1])
+    return res
+
+
+def _head_support_log_probs_and_entropy(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    with_entropy: bool,
+    max_seq_lens: list[int] | None,
+    rollout_sampling_mask: Sequence[RolloutSamplingMask],
+) -> dict[str, list[torch.Tensor]]:
+    res = {"log_probs": [], **({"entropy": []} if with_entropy else {})}
+    entropy_column = int(not torch.is_grad_enabled())   # the head adds it in no-grad passes (head_entropy)
+    chunks = _iter_response_chunks(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        include_response_indices=True,
+    )
+    for i, (chunk, _tokens, indices) in enumerate(chunks):
+        _ids, offsets = rollout_sampling_mask[i]._as_tensors()
+        indices = torch.as_tensor(list(indices), dtype=torch.long)
+        lengths = (offsets[indices + 1] - offsets[indices]).to(chunk.device)
+        width = chunk.size(-1) - 1 - entropy_column
+        widest = int(lengths.max()) if lengths.numel() else 0
+        assert 1 <= width and widest <= width, f"head support width {width} < {widest}"
+        valid = torch.arange(width, device=chunk.device) < lengths[:, None]
+        logp, entropy = support_log_probs_from_head(chunk[:, : 1 + width].float(), valid)
+        res["log_probs"].append(logp[:, 0])
+        if with_entropy:
+            res["entropy"].append(entropy)
     return res
 
 

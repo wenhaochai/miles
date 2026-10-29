@@ -10,7 +10,7 @@ from miles.backends.training_utils.data.context_parallel import (
     get_local_response_loss_masks,
     slice_log_prob_with_cp,
 )
-from miles.backends.training_utils.loss.hub.logit_processors import _iter_response_chunks
+from miles.backends.training_utils.loss.hub.logit_processors import _iter_response_chunks, support_log_probs_from_head
 from miles.backends.training_utils.loss.hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss.hub.score_centering import (
     ScoreCenteringInputs,
@@ -55,8 +55,8 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
         include_response_indices=True,
     )
     fused_head = getattr(args, "fused_head_log_probs", False)
-    if fused_head and (with_entropy or replay):
-        raise ValueError("a fused head scores the sampled token and the candidates only: no entropy, no replay")
+    if fused_head and (with_entropy or (replay and not support_only)):
+        raise ValueError("a fused head scores the sampled token and the candidates only: no entropy, no KL with replay")
     for i, (chunk, tokens, indices) in enumerate(chunks):
         indices = torch.as_tensor(list(indices), dtype=torch.long)
         ids = _candidate_ids(batch, i, indices).to(logits.device)
@@ -64,7 +64,10 @@ def _candidate_log_probs(args: Namespace, batch: RolloutBatch, logits: torch.Ten
         if fused_head:
             # the model scored these very ids at these rows (FSDP actor _head_kwargs)
             assert chunk.size(-1) == ids.size(-1), f"head columns {chunk.size(-1)} != candidates {ids.size(-1)}"
-            result["selected"].append(torch.where(ids >= 0, chunk, 0.0))
+            if support_only:   # the candidates are the sampled support: the log-probs over it
+                result["selected"].append(support_log_probs_from_head(chunk.float(), ids[:, 1:] >= 0)[0])
+            else:
+                result["selected"].append(torch.where(ids >= 0, chunk, 0.0))
             if args.use_kl_loss:
                 result["kl_log_probs"].append(chunk[:, 0])
             continue

@@ -431,6 +431,12 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         from miles.backends.training_utils.loss.hub.score_centering_loss import _candidate_ids
 
         with_candidates = batch.get("rollout_topk_log_probs") is not None
+        # a forward-only pass under sampling-support replay scores each row's support (from its sampling mask)
+        support = None
+        if not with_candidates and self.args.use_sampling_support_replay:
+            from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+
+            support = get_rollout_sampling_masks(batch)
         rows, ids = [], []
         layout = iter_local_response_rows(
             num_rows,
@@ -440,13 +446,15 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             qkv_format=self.args.qkv_format,
             allgather_cp=self.args.allgather_cp,
             max_seq_lens=batch.get("max_seq_lens"),
-            include_response_indices=with_candidates,
+            include_response_indices=with_candidates or support is not None,
         )
         for i, (row_ranges, tokens, indices) in enumerate(layout):
             rows.extend(torch.arange(start, end) for start, end in row_ranges)
             columns = [tokens.view(-1, 1).long().cpu()]
             if with_candidates:
                 columns.append(_candidate_ids(batch, i, torch.as_tensor(list(indices), dtype=torch.long)))
+            elif support is not None:
+                columns.append(_support_ids(support[i], indices, self.args.rollout_top_k))
             ids.append(torch.cat(columns, dim=1))
         device = batch["tokens"].device
         return {
@@ -455,6 +463,20 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             "head_temperature": self.args.rollout_temperature,
             "head_entropy": not torch.is_grad_enabled(),
         }
+
+
+def _support_ids(mask, indices, width: int) -> torch.Tensor:
+    """[rows, width] the sampling-mask support of each response row ``indices``, padded with -1."""
+    support, offsets = mask._as_tensors()
+    indices = torch.as_tensor(list(indices), dtype=torch.long)
+    start, lengths = offsets[indices], offsets[indices + 1] - offsets[indices]
+    widest = int(lengths.max()) if lengths.numel() else 0
+    assert widest <= width, f"a support of {widest} ids is wider than top-k {width}"
+    columns = torch.arange(width)
+    valid = columns < lengths[:, None]
+    ids = torch.full((len(indices), width), -1, dtype=torch.long)
+    ids[valid] = support[(start[:, None] + columns)[valid]].long()
+    return ids
 
 
 @torch.no_grad()
