@@ -120,6 +120,9 @@ class TestConnect:
         assert protocol.use_distribute is True
         assert protocol.rollout_engines == engines[:3]
         assert protocol.distributed_rollout_engines == engines[3:]
+        # the weight-update session reaches the distributed tail as well as the colocated engines
+        assert sorted(protocol.cell_updaters_of_cell_id) == [f"cell-{i}" for i in range(4)]
+        assert protocol.cell_updaters_of_cell_id["cell-3"]._api_client is engines[3]
         connect.assert_called_once_with(protocol.args, "miles", engines[3:], engine_gpu_counts=[2])
         disconnect.assert_not_called()
         assert protocol._model_update_groups is connect.return_value

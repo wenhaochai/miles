@@ -1112,6 +1112,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--extra-inference-engine-provider-path",
+                type=str,
+                default=None,
+                help=(
+                    "Import path of a callable(args, *, capability) returning a BaseWorkerProvider whose engine "
+                    "cells join the run's own engines (for example engines in other jobs that come and go). The "
+                    "run still launches its own engines and never waits for an extra one: the startup gate counts "
+                    "its own cells. An extra cell serves from the first weight push after it is announced. Only "
+                    "with the run's own engines (not with external rollout) and --deploy-component all."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-transfer-mode",
                 choices=["broadcast", "broadcast_packed", "p2p", "disk-delta"],
                 default="broadcast",
@@ -3093,6 +3105,19 @@ def _compute_custom_inference_engine_provider_path(args: argparse.Namespace) -> 
 _DEPLOY_INSTANCE_ID_PATTERN = re.compile(DNS_LABEL_PATTERN)
 
 
+def _validate_extra_engine_provider(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if (path := getattr(args, "extra_inference_engine_provider_path", None)) is None:
+        return
+    assert not args.rollout_external, (
+        f"--extra-inference-engine-provider-path {path!r} adds engines to the run's own; with external rollout "
+        f"(--rollout-external-engine-addrs or --custom-inference-engine-provider-path) the run has none"
+    )
+    assert component is DeployComponent.ALL, (
+        f"--extra-inference-engine-provider-path is served by the run's own inference controller, which "
+        f"--deploy-component {component.value} does not launch with the run's engines"
+    )
+
+
 def _validate_deploy_component(args: argparse.Namespace) -> None:
     component = DeployComponent(args.deploy_component)
 
@@ -3100,6 +3125,7 @@ def _validate_deploy_component(args: argparse.Namespace) -> None:
     _validate_static_addrs_external_launch(args, component=component)
     _validate_registration(args, component=component)
     _validate_single_engine_source(args, component=component)
+    _validate_extra_engine_provider(args, component=component)
 
     if not component.is_split():
         return

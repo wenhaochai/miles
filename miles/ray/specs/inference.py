@@ -20,6 +20,7 @@ from miles.utils.workers.registration.reporter import RegistrationReporter
 from miles.utils.workers.types import DeployComponent, PlatformAccess
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.composite import CompositeWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
 from miles.utils.workers.worker_spec import (
     CommandWorkerSpec,
@@ -92,7 +93,12 @@ def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
 
 def _compute_controller_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
     if DeployComponent(args.deploy_component).deploys_own_inference_engines():
-        return compute_engine_provider(args, capability=capability)
+        provider = compute_engine_provider(args, capability=capability)
+        if (extra_path := getattr(args, "extra_inference_engine_provider_path", None)) is not None:
+            provider = CompositeWorkerProvider(
+                primary=provider, extra=load_function(extra_path)(args, capability=capability)
+            )
+        return provider
     return RegistrationHub(run_uuid=args.run_uuid)
 
 
