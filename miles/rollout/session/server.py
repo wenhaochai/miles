@@ -20,6 +20,7 @@ from yarl import URL
 
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
+from miles.rollout.session.heap import bound_heap
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.workers.argv_utils import parse_config_argv
@@ -135,12 +136,15 @@ def run_session_server(config: SessionServerConfig):
     # Visible to `pkill -9 miles`; without this the daemon inherits "python".
     setproctitle.setproctitle("miles-session-server")
 
+    # MB-sized buffers back to the OS when a session ends (heap.py): otherwise ~70 GiB stays resident at B=16
+    bounded = bound_heap()
     server = SessionServer(config)
     logger.info(
-        "[session-server] Starting on %s:%s, proxying to %s",
+        "[session-server] Starting on %s:%s, proxying to %s (fixed mmap threshold: %s)",
         config.host,
         config.port,
         config.backend_url,
+        bounded,
     )
     # Keep server-side idle closure well after the HTTP client's default 5s expiry.
     uvicorn.run(

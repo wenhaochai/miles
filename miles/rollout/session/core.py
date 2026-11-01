@@ -21,6 +21,7 @@ from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.config import SessionServerConfig
+from miles.rollout.session.heap import trim as trim_heap
 from miles.rollout.session.errors import (
     SessionNotFoundError,
     TokenizationError,
@@ -338,6 +339,8 @@ class SessionCore:
             self.registry.remove_session(session_id)
         finally:
             session.lock.release()
+        del session
+        trim_heap()   # the ended session's freed pages back to the OS (heap.py)
         return Response(status_code=204)
 
     async def chat_completions(
