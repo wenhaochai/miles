@@ -18,6 +18,7 @@ from miles.backends.megatron_utils.megatron_config import get_megatron_arg_parse
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
+from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.utils.arguments import (
     FULLY_ASYNC_ROLLOUT_PATH,
     _compute_custom_inference_engine_provider_path,
@@ -774,6 +775,32 @@ def test_the_flag_still_rejects_a_different_rollout_function():
     args = _fully_async_candidate_args(fully_async=True, rollout_function_path="pkg.CustomRolloutFn")
 
     with pytest.raises(AssertionError, match="pass only one"):
+        _resolve_rollout_functions(args)
+
+
+class _ProducerWithItsOwnPolicy(FullyAsyncRolloutFn):
+    """A fully async producer subclass, as a run selects one with --fully-async --rollout-function-path."""
+
+
+_SUBCLASS_PATH = f"{__name__}._ProducerWithItsOwnPolicy"
+
+
+def test_the_flag_keeps_a_subclass_of_the_fully_async_producer():
+    """A subclass of FullyAsyncRolloutFn is the same mode with its own policy: the flag's checks apply and the
+    subclass, not the base class, serves both rollout and eval."""
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path=_SUBCLASS_PATH)
+
+    _resolve_rollout_functions(args)
+
+    assert args.fully_async is True
+    assert args.rollout_function_path == _SUBCLASS_PATH
+    assert args.eval_function_path == _SUBCLASS_PATH
+
+
+def test_a_subclass_of_the_fully_async_producer_meets_the_mode_constraints():
+    args = _fully_async_candidate_args(fully_async=True, rollout_function_path=_SUBCLASS_PATH, colocate=True, train_backend="fsdp")
+
+    with pytest.raises(AssertionError, match="FSDP updater"):
         _resolve_rollout_functions(args)
 
 
