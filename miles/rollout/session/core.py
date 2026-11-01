@@ -9,6 +9,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 """
 
 import asyncio
+import gc
 import json
 import logging
 import time
@@ -340,7 +341,12 @@ class SessionCore:
         finally:
             session.lock.release()
         del session
-        trim_heap()   # the ended session's freed pages back to the OS (heap.py)
+        # A session's trajectory tree links nodes both ways (parent, children), so it is a reference cycle that
+        # refcounting never frees; each node holds its record (response body, base64 routed-expert payload, ~30 MB per
+        # turn). Left to Python's rare full collections, ended sessions stayed live: 32 session servers held ~31 GiB of
+        # MB-sized buffers in RL training (2026-11-01, w794). Collect now, then return the pages (heap.py).
+        gc.collect()
+        trim_heap()
         return Response(status_code=204)
 
     async def chat_completions(
