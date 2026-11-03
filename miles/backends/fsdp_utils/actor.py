@@ -159,6 +159,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # The rollout function assumes the restored version is published, or restored groups are mistaken for newer ones:
         # a resume at rollout N publishes N + 1 next, as a run without the stop would (a fresh run: 1).
         self._published_weight_version = int(getattr(self.args, "start_rollout_id", 0) or 0)
+        self._freed_memory_kept = False
 
         self.max_tokens_per_gpu = args.max_tokens_per_gpu
 
@@ -359,6 +360,9 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # model in host memory (160 GB for Flint) that would otherwise sit there through the next rollout
         self.optimizer.zero_grad(set_to_none=True)
         _trim_host_memory("after the optimizer step")
+        if not self._freed_memory_kept and os.environ.get("MILES_KEEP_FREED_AFTER_FIRST_STEP"):
+            self._freed_memory_kept = True
+            _keep_freed_memory()
         extra = {f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)}
         if routing_replay_manager.count_mismatch:
             counts = routing_replay_manager.pop_mismatch_counts(torch.cuda.current_device())
@@ -499,6 +503,18 @@ def _trim_host_memory(when: str) -> None:
         pass
     logger.info(f"[Rank {dist.get_rank()}] host RSS {when}: {before:.1f} -> {pinned:.1f} (pinned cache emptied) -> "
                 f"{_rss_gb():.1f} GB (malloc_trim)")
+
+
+def _keep_freed_memory() -> None:
+    """From now on glibc serves large buffers from its heap and keeps them when they are freed, so a micro-batch's temporary buffers reuse the last ones instead of new zeroed pages (a replay
+    at 4 ranks: 47% more tokens/s, at 8 ranks 23-34%; the same loss, KL and log-prob gap). _trim_host_memory still hands everything back after each optimizer step. Not from the process's
+    start: what a checkpoint load frees would stay resident (w885: 110 GiB on rank 0, 850 GiB on the node through the rollout), and the Adam moments' first allocation peaks 75 GiB higher
+    (w958). The job also sets MALLOC_TRIM_THRESHOLD_ (mallopt takes an int, so it cannot pass 2 GiB) and MALLOC_ARENA_MAX=1."""
+    import ctypes
+
+    M_MMAP_MAX = -4
+    ok = ctypes.CDLL("libc.so.6").mallopt(M_MMAP_MAX, 0)
+    logger.info(f"[Rank {dist.get_rank()}] glibc keeps freed memory from now on (mallopt {ok})")
 
 
 def _support_width(mask, indices) -> int:
