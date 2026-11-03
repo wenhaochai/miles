@@ -207,3 +207,29 @@ def test_support_no_grad_log_probs_and_entropy_match_full_logits():
             torch.testing.assert_close(f, r, rtol=1e-5, atol=1e-6)
     # the support's log-probs differ from the full vocabulary's: the test sees the renormalization
     assert not torch.allclose(plain["log_probs"][0], ref["log_probs"][0])
+
+
+def test_a_support_wider_than_top_k_is_scored_in_full():
+    """The engine's top-k keeps every id tied with the k-th, and the mask is what the sampler drew from, so a support can pass K (w922, rollout 10: 21 ids at top-k 20).
+    The log-prob pass scores all of it, in a batch one column wider, and matches the full-logits path."""
+    from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+
+    batch = {k: v for k, v in _support_batch().items() if not k.startswith("rollout_topk")}
+    ids, off = batch["rollout_sampling_mask_ids"][0], batch["rollout_sampling_mask_offsets"][0]
+    first = ids[off[0]: off[1]].tolist()
+    extra = [x for x in range(31) if x not in first][: K + 1 - len(first)]
+    batch["rollout_sampling_mask_ids"][0] = torch.cat([torch.tensor(first + extra, dtype=torch.int32), ids[off[1]:]])
+    batch["rollout_sampling_mask_offsets"][0] = torch.cat([torch.tensor([0]), off[1:] + K + 1 - len(first)])
+    model = _model()
+    with torch.no_grad():
+        ref = _masked_reference(_forward(model, batch, False), batch, _support_args(False))
+        kwargs = FSDPTrainRayActor._head_kwargs(SimpleNamespace(args=_support_args(True)), batch, batch["tokens"].size(-1))
+        assert kwargs["head_ids"].size(1) == 1 + K + 1
+        logits = model(batch["tokens"], batch["position_ids"], None, **kwargs).logits
+        fused = logit_processors.get_log_probs_and_entropy(
+            logits, args=_support_args(True), unconcat_tokens=batch["unconcat_tokens"],
+            total_lengths=batch["total_lengths"], response_lengths=batch["response_lengths"], with_entropy=True,
+            rollout_sampling_mask=get_rollout_sampling_masks(batch))
+    for key in ("log_probs", "entropy"):
+        for r, f in zip(ref[key], fused[key], strict=True):
+            torch.testing.assert_close(f, r, rtol=1e-5, atol=1e-6)

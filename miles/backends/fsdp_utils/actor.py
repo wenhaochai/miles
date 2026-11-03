@@ -452,13 +452,19 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             max_seq_lens=batch.get("max_seq_lens"),
             include_response_indices=with_candidates or support is not None,
         )
+        layout = list(layout)
+        if support is not None:
+            # one width for the batch: at least top-k, more when a support is wider (see _support_width)
+            width = max([self.args.rollout_top_k] + [_support_width(support[i], indices) for i, (_, _, indices) in enumerate(layout)])
+            if width > self.args.rollout_top_k:
+                logger.info(f"a sampling support of {width} ids at top-k {self.args.rollout_top_k}: the batch scores {width} columns")
         for i, (row_ranges, tokens, indices) in enumerate(layout):
             rows.extend(torch.arange(start, end) for start, end in row_ranges)
             columns = [tokens.view(-1, 1).long().cpu()]
             if with_candidates:
                 columns.append(_candidate_ids(batch, i, torch.as_tensor(list(indices), dtype=torch.long)))
             elif support is not None:
-                columns.append(_support_ids(support[i], indices, self.args.rollout_top_k))
+                columns.append(_support_ids(support[i], indices, width))
             ids.append(torch.cat(columns, dim=1))
         device = batch["tokens"].device
         return {
@@ -492,13 +498,21 @@ def _trim_host_memory(when: str) -> None:
                 f"{_rss_gb():.1f} GB (malloc_trim)")
 
 
+def _support_width(mask, indices) -> int:
+    """The widest sampling support among response rows ``indices``. It can pass top-k: the engine's top-k (flashinfer's renorm) keeps every id tied with the k-th, and the
+    mask is what the sampler really drew from (w922, rollout 10: 21 ids at top-k 20)."""
+    _, offsets = mask._as_tensors()
+    indices = torch.as_tensor(list(indices), dtype=torch.long)
+    return int((offsets[indices + 1] - offsets[indices]).max()) if indices.numel() else 0
+
+
 def _support_ids(mask, indices, width: int) -> torch.Tensor:
     """[rows, width] the sampling-mask support of each response row ``indices``, padded with -1."""
     support, offsets = mask._as_tensors()
     indices = torch.as_tensor(list(indices), dtype=torch.long)
     start, lengths = offsets[indices], offsets[indices + 1] - offsets[indices]
     widest = int(lengths.max()) if lengths.numel() else 0
-    assert widest <= width, f"a support of {widest} ids is wider than top-k {width}"
+    assert widest <= width, f"a support of {widest} ids is wider than {width} columns"
     columns = torch.arange(width)
     valid = columns < lengths[:, None]
     ids = torch.full((len(indices), width), -1, dtype=torch.long)
