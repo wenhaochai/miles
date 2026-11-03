@@ -920,3 +920,25 @@ class TestCreateTrainingModel:
         assert info.start_rollout_id == 4
         handle.load_state.assert_awaited_once_with()
         handle.init.assert_not_awaited()
+
+
+class TestGpuOrder:
+    """MILES_GPU_ORDER: the job chooses which GPUs the actor takes (the first ones): 2 per NUMA node for a split node."""
+
+    def _sorted(self, gpu_ids):
+        infos = [(i, "10.0.0.1", g) for i, g in enumerate(gpu_ids)]
+        return [x[2] for x in sorted(infos, key=placement_group_module.sort_key)]
+
+    def test_without_it_gpus_sort_by_id(self, monkeypatch):
+        monkeypatch.delenv("MILES_GPU_ORDER", raising=False)
+        assert self._sorted([3, 0, 2, 1]) == [0, 1, 2, 3]
+
+    @pytest.mark.parametrize("ids", [[7, 6, 5, 4, 3, 2, 1, 0], ["7", "6", "5", "4", "3", "2", "1", "0"]])
+    def test_with_it_gpus_sort_by_their_place_in_it(self, monkeypatch, ids):
+        monkeypatch.setenv("MILES_GPU_ORDER", "0,1,4,5,2,3,6,7")
+        assert [int(g) for g in self._sorted(ids)] == [0, 1, 4, 5, 2, 3, 6, 7]
+
+    def test_a_gpu_it_does_not_name_is_an_error(self, monkeypatch):
+        monkeypatch.setenv("MILES_GPU_ORDER", "0,1,4,5")
+        with pytest.raises(ValueError, match="not in MILES_GPU_ORDER"):
+            self._sorted([0, 2])

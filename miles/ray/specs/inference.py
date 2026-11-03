@@ -315,13 +315,18 @@ def _compute_spec_inference_engine(
             + ctx.cell_index * num_workers_per_cell
             + ctx.worker_in_cell_index
         )
+        # sglang counts its devices up from base_gpu_id, so GPUs that are not in a row (MILES_GPU_ORDER) must look as if they were
+        base_gpu_id, prefix = ctx.local_gpu_ids[0], interpreter_prefix
+        if ctx.local_gpu_ids != list(range(base_gpu_id, base_gpu_id + len(ctx.local_gpu_ids))):
+            devices = ",".join(str(gpu) for gpu in ctx.gpu_ids)
+            base_gpu_id, prefix = 0, ["env", f"CUDA_VISIBLE_DEVICES={devices}", *interpreter_prefix]
         return compute_engine_launch_cmd(
             args=args,
-            interpreter_prefix=interpreter_prefix,
+            interpreter_prefix=prefix,
             # TODO: make the indexing it k8s native compatible
             node_rank=ctx.worker_in_cell_index,
             worker_type=server_group_config.worker_type,
-            base_gpu_id=ctx.local_gpu_ids[0],
+            base_gpu_id=base_gpu_id,
             sglang_overrides=server_group_config.overrides,
             num_gpus_per_engine=server_group_config.num_gpus_per_engine,
             dist_init_addr=f"{dist_init.host}:{dist_init.port}",

@@ -992,6 +992,28 @@ def _make_engine_ctx(
 
 
 class TestEngineBaseGpuId:
+    @pytest.mark.parametrize(
+        "local, expected_base, expected_mask",
+        [([2, 3, 4, 5], 2, None), ([2, 3, 6, 7], 0, "CUDA_VISIBLE_DEVICES=2,3,6,7")],
+    )
+    def test_gpus_not_in_a_row_are_masked_so_sglang_counts_them_from_zero(
+        self, tmp_path, monkeypatch, local, expected_base, expected_mask
+    ):
+        """sglang takes base_gpu_id, base_gpu_id + 1, ...: GPUs 2,3,6,7 must look like 0,1,2,3 or it would use 4 and 5."""
+        seen = []
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", lambda **kw: seen.append(kw) or "cmd")
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 4}])
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4, num_gpus_per_node=8)
+        (spec,) = specs_inference_engine(args)
+        spec.launch_command(_make_engine_ctx(gpu_ids=local, local_gpu_ids=local))
+
+        assert seen[0]["base_gpu_id"] == expected_base
+        prefix = seen[0]["interpreter_prefix"]
+        assert (prefix[0:2] == ["env", expected_mask]) if expected_mask else (prefix[0] != "env")
+
     def test_the_launch_command_uses_the_gpu_ids_the_worker_itself_resolved(self, tmp_path, monkeypatch):
         """The manager runs without a visibility mask, so passing its physical ids would point sglang at
         a device the engine process cannot see."""

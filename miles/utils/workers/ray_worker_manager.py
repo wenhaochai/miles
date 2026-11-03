@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from functools import partial
@@ -433,8 +434,11 @@ class _BaseActorManager(Generic[SpecT]):
         if (pg_name := self.spec.scheduling.pg_name) is None:
             return []
         pg = self.manager.pgs[pg_name]
+        slots = self.spec.scheduling.num_gpu_slots_per_worker
+        if os.environ.get("MILES_GPU_ORDER"):   # a chosen order need not run in a row: each slot's own GPU
+            return [int(x) for x in pg.pg_reordered_gpu_ids[self.gpu_slot_index : self.gpu_slot_index + slots]]
         base_gpu_id = int(pg.pg_reordered_gpu_ids[self.gpu_slot_index])
-        return list(range(base_gpu_id, base_gpu_id + self.spec.scheduling.num_gpu_slots_per_worker))
+        return list(range(base_gpu_id, base_gpu_id + slots))
 
     @property
     def master_mode_addrs(self) -> NamedHostAndPorts:

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import socket
 from argparse import Namespace
 from typing import NamedTuple
@@ -61,6 +62,18 @@ class InfoActor:
         return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
 
 
+def _gpu_order(gpu_id):
+    """Where a GPU sorts on its node: by its id, or by its place in MILES_GPU_ORDER (GPU ids, comma-separated, such as
+    "0,1,4,5,2,3,6,7") when the job chooses which GPUs the actor gets: the actor takes the first ones."""
+    order = os.environ.get("MILES_GPU_ORDER")
+    if not order:
+        return gpu_id
+    ids = [x.strip() for x in order.split(",")]
+    if str(gpu_id) not in ids:
+        raise ValueError(f"GPU {gpu_id} is not in MILES_GPU_ORDER={order}")
+    return ids.index(str(gpu_id))
+
+
 def sort_key(x):
     index, node_identifier, gpu_id = x
     # Sort by node IP number and then by GPU ID
@@ -79,7 +92,7 @@ def sort_key(x):
             # representation that allows for sorting.
             node_ip_parts = [ord(c) for c in node_identifier]
 
-    return (node_ip_parts, gpu_id)
+    return (node_ip_parts, _gpu_order(gpu_id))
 
 
 class PlacementGroupInfo(NamedTuple):

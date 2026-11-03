@@ -1150,6 +1150,27 @@ class TestGpuPlacement:
         assert recorder.context_of(cell_index=0, worker_in_cell_index=0).gpu_ids == [4, 5]
         assert recorder.context_of(cell_index=0, worker_in_cell_index=1).gpu_ids == [6, 7]
 
+    async def test_a_chosen_gpu_order_gives_a_worker_each_slots_own_gpu(self, fake_ray_cluster: FakeRayCluster, monkeypatch):
+        """MILES_GPU_ORDER: the slots' GPUs need not run in a row, and a worker gets exactly those."""
+        monkeypatch.setenv("MILES_GPU_ORDER", "0,1,4,5,2,3,6,7")
+        recorder = _LaunchRecorder()
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=4,
+            pg_name="rollout",
+            launch_command=recorder.command,
+        )
+        pgs = {
+            "rollout": PlacementGroupInfo(
+                pg="fake-pg", pg_reordered_bundle_indices=[4, 5, 6, 7], pg_reordered_gpu_ids=[2, 3, 6, 7]
+            )
+        }
+        await _launch([spec], pgs)
+
+        assert recorder.context_of(cell_index=0, worker_in_cell_index=0).gpu_ids == [2, 3, 6, 7]
+
     async def test_local_gpu_ids_are_resolved_by_the_worker_itself_before_its_command_is_built(
         self, fake_ray_cluster: FakeRayCluster
     ):
