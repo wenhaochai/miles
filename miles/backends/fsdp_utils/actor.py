@@ -156,6 +156,9 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         self.weight_updater = self._build_weight_updater(self.model, FSDPHfWeightIterator.build)
 
         checkpoint.finalize_load(self, checkpoint_payload)
+        # The rollout function assumes the restored version is published, or restored groups are mistaken for newer ones:
+        # a resume at rollout N publishes N + 1 next, as a run without the stop would (a fresh run: 1).
+        self._published_weight_version = int(getattr(self.args, "start_rollout_id", 0) or 0)
 
         self.max_tokens_per_gpu = args.max_tokens_per_gpu
 
