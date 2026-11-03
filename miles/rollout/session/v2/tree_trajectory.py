@@ -11,7 +11,7 @@ from typing import Any
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
-MAX_NODES = 1024
+MAX_NODES = 4096   # one node per generation. A game that only ends at its token budget lets an agent that has finished burn it in short turns: 128k tokens at about 37 per turn, w786's rollout 51 passed 1024
 
 
 @dataclass
